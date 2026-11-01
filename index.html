@@ -1,0 +1,2093 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deutsch B1 — Entraînement</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: { primary: '#FFB800', 'primary-dark': '#FF8A00' },
+          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+        },
+      },
+    };
+  </script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', sans-serif; background: #F8F9FA; overflow-x: hidden; }
+    ::-webkit-scrollbar { width: 3px; } ::-webkit-scrollbar-thumb { background: #e0e0e0; border-radius: 3px; }
+    .fade-in { animation: fi .25s ease; }
+    @keyframes fi { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    .gradient-bg  { background: linear-gradient(135deg, #FFB800 0%, #FF8A00 100%); }
+    .gradient-text { background: linear-gradient(135deg, #FFB800, #FF8A00); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .card { background: #fff; border-radius: 16px; box-shadow: 0 2px 12px rgba(0,0,0,.06); }
+    .bubble-ai   { background: #F0F0F5; border-radius: 16px 16px 16px 4px; }
+    .bubble-user { background: linear-gradient(135deg, #FFB800, #FF8A00); color: #fff; border-radius: 16px 16px 4px 16px; }
+    .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+    @keyframes pulse-ring { 0% { transform: scale(.9); opacity: 1; } 100% { transform: scale(1.5); opacity: 0; } }
+    .pulse-ring { animation: pulse-ring 1.1s ease-out infinite; }
+    .dot-bounce { animation: bounce .8s ease infinite; }
+    @keyframes bounce { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-5px)} }
+    .bottom-safe { padding-bottom: env(safe-area-inset-bottom, 0); }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useMemo, useCallback, memo } = React;
+
+/* ═══════════════════════════════════════════
+   CONSTANTS & STORAGE
+═══════════════════════════════════════════ */
+const EXAM_DATE = new Date('2026-11-24T09:00:00');
+
+const K = {
+  API:      'dex_apikey',
+  NOTEBOOK: 'dex_notebook',
+  SESSIONS: 'dex_sessions',
+  TOPICS:   'dex_topics',
+};
+
+const db = {
+  get: (key, def = null) => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : def; } catch { return def; } },
+  set: (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} },
+};
+
+const uid = () => Math.random().toString(36).slice(2, 9);
+
+/* ═══════════════════════════════════════════
+   GEMINI API
+═══════════════════════════════════════════ */
+const GEMINI_MODELS = [
+  'gemini-3.5-flash-lite',
+  'gemini-3.5-flash',
+  'gemini-3.8-flash',
+  'gemini-3.1-flash-lite'
+];
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const dataUrl = reader.result;
+      const base64 = dataUrl.split(',')[1];
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function gemini(apiKey, system, history, userMsg, { json = false, temperature = 0.8, audio = null } = {}) {
+  const userParts = [];
+  if (audio && audio.base64) {
+    userParts.push({
+      inlineData: {
+        mimeType: audio.mimeType || 'audio/webm',
+        data: audio.base64,
+      },
+    });
+  }
+  if (userMsg) {
+    userParts.push({ text: userMsg });
+  }
+
+  const contents = [
+    ...history.map(m => ({
+      role: m.role === 'ai' ? 'model' : 'user',
+      parts: [{ text: m.text }],
+    })),
+    { role: 'user', parts: userParts },
+  ];
+
+  const body = {
+    system_instruction: { parts: [{ text: system }] },
+    contents,
+    generationConfig: { temperature, maxOutputTokens: 1200 },
+  };
+
+  let lastErr = null;
+  for (const model of GEMINI_MODELS) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+      );
+
+      const data = await res.json();
+      if (data.error) {
+        lastErr = new Error(data.error.message);
+        continue;
+      }
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+      if (json) {
+        const m = text.match(/```json\s*([\s\S]*?)```/) || text.match(/(\[[\s\S]*\]|\{[\s\S]*\})/);
+        if (m) { try { return JSON.parse(m[1] || m[0]); } catch {} }
+        throw new Error('JSON parse error');
+      }
+      return text;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  throw lastErr || new Error('Erreur lors de la communication avec Gemini');
+}
+
+/* Parse [PARTNER]…[/PARTNER][FEEDBACK]{…}[/FEEDBACK] */
+function parseChat(raw) {
+  const pm = raw.match(/\[PARTNER\]([\s\S]*?)\[\/PARTNER\]/);
+  const fm = raw.match(/\[FEEDBACK\]([\s\S]*?)\[\/FEEDBACK\]/);
+  let partner = pm ? pm[1].trim() : '';
+  let feedback = null;
+  if (fm) {
+    let fStr = fm[1].trim();
+    fStr = fStr.replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
+    try {
+      feedback = JSON.parse(fStr);
+    } catch {
+      const jm = fStr.match(/\{[\s\S]*\}/);
+      if (jm) {
+        try { feedback = JSON.parse(jm[0]); } catch {}
+      }
+    }
+  }
+  if (!partner) {
+    partner = raw.replace(/\[FEEDBACK\][\s\S]*?\[\/FEEDBACK\]/g, '').replace(/\[\/?PARTNER\]/g, '').trim();
+  }
+  return { partner: partner || raw.trim(), feedback };
+}
+
+/* ═══════════════════════════════════════════
+   AUDIO RECORDER & SPEECH SYNTHESIS
+═══════════════════════════════════════════ */
+function speakGerman(text) {
+  if (!('speechSynthesis' in window)) return;
+  window.speechSynthesis.cancel();
+  const clean = text.replace(/\[\/?(PARTNER|FEEDBACK)\]/g, '').replace(/[«»"]/g, '').trim();
+  const u = new SpeechSynthesisUtterance(clean);
+  u.lang = 'de-DE';
+  u.rate = 0.95;
+  window.speechSynthesis.speak(u);
+}
+
+function useVoiceRecorder() {
+  const [recording, setRecording]     = useState(false);
+  const [recordSecs, setRecordSecs]   = useState(0);
+  const [audioBlob, setAudioBlob]     = useState(null);
+  const [audioUrl, setAudioUrl]       = useState(null);
+  const [transcript, setTranscript]   = useState('');
+  
+  const mediaRecorderRef = useRef(null);
+  const chunksRef        = useRef([]);
+  const timerRef         = useRef(null);
+  const speechRef        = useRef(null);
+
+  const start = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      chunksRef.current = [];
+
+      let mimeType = 'audio/webm';
+      if (!window.MediaRecorder || !MediaRecorder.isTypeSupported('audio/webm')) {
+        if (window.MediaRecorder && MediaRecorder.isTypeSupported('audio/mp4')) mimeType = 'audio/mp4';
+        else mimeType = '';
+      }
+
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = e => {
+        if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+      };
+
+      recorder.onstop = () => {
+        const type = recorder.mimeType || 'audio/webm';
+        const blob = new Blob(chunksRef.current, { type });
+        const url  = URL.createObjectURL(blob);
+        setAudioBlob(blob);
+        setAudioUrl(url);
+        stream.getTracks().forEach(t => t.stop());
+      };
+
+      recorder.start(100);
+      setRecording(true);
+      setRecordSecs(0);
+      setAudioBlob(null);
+      setAudioUrl(null);
+      setTranscript('');
+
+      timerRef.current = setInterval(() => {
+        setRecordSecs(s => s + 1);
+      }, 1000);
+
+      // Web Speech API in parallel for live German transcription
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (SR) {
+        try {
+          const rec = new SR();
+          rec.lang = 'de-DE';
+          rec.continuous = true;
+          rec.interimResults = true;
+          rec.onresult = e => {
+            const t = Array.from(e.results).map(r => r[0].transcript).join('');
+            setTranscript(t);
+          };
+          speechRef.current = rec;
+          rec.start();
+        } catch (e) {
+          console.warn('SpeechRecognition error:', e);
+        }
+      }
+    } catch (err) {
+      alert("Impossible d'accéder au microphone : " + err.message);
+    }
+  }, []);
+
+  const stop = useCallback(() => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    if (speechRef.current) {
+      try { speechRef.current.stop(); } catch {}
+    }
+    setRecording(false);
+  }, []);
+
+  const reset = useCallback(() => {
+    setAudioBlob(null);
+    setAudioUrl(null);
+    setRecordSecs(0);
+    setTranscript('');
+  }, []);
+
+  return {
+    recording,
+    recordSecs,
+    audioBlob,
+    audioUrl,
+    transcript,
+    setTranscript,
+    start,
+    stop,
+    reset,
+  };
+}
+
+/* ═══════════════════════════════════════════
+   SPRECHEN PARTS DEFINITIONS
+═══════════════════════════════════════════ */
+const PARTS = [
+  {
+    id: 1, emoji: '🗣️', grad: 'from-yellow-400 to-orange-400',
+    title: 'Sich vorstellen', sub: 'Se présenter',
+    greeting: 'Guten Tag! Ich bin Ihre Prüfungspartnerin Anna. Schön, Sie kennenzulernen! Dürfte ich Sie bitten, sich kurz vorzustellen? Wie heißen Sie, woher kommen Sie und was machen Sie beruflich?',
+    system: `Du bist Anna, eine freundliche aber genaue Prüfungspartnerin und Prüferin beim Goethe-Zertifikat B1 (Modul Sprechen, Teil 1: Sich vorstellen).
+Der Prüfungskandidat sendet dir echte Audioaufnahmen seiner Stimme oder Text.
+
+WICHTIGE ANWEISUNGEN:
+1. Wenn ein Audio vorhanden ist, höre es dir aufmerksam an.
+2. Beurteile Aussprache, Betonung, Grammatik, Wortschatz und Flüssigkeit.
+3. Antworte IMMER und AUSSCHLIESSLICH in diesem exakten Format:
+
+[PARTNER]
+Deine freundliche und natürliche Antwort auf Deutsch als Prüfungspartnerin Anna (Niveau B1), um das Gespräch fortzusetzen (z.B. Folgefrage zu Hobbys, Familie, Deutschlernen)…
+[/PARTNER]
+[FEEDBACK]
+{
+  "transcription": "Genaue Transkription dessen, was der Kandidat auf Deutsch gesagt hat",
+  "pronunciation": "Feedback détaillé en français sur la prononciation : clarté des sons (ch, r, ä/ö/ü, sp/st, diphthongues), accentuation tonique et intonation",
+  "grammar": "Explication en français des erreurs de grammaire (ordre des mots, verbe conjugué en position 2 ou à la fin avec weil/dass, cas Akkusativ/Dativ, prépositions)",
+  "suggestion": "Une formulation B1 plus fluide, idiomatique et élégante en allemand",
+  "score": 7.5,
+  "strengths": ["Bonne clarté", "Vocabulaire adapté"],
+  "improvements": ["Faire attention à la place du verbe à la fin"]
+}
+[/FEEDBACK]`,
+  },
+  {
+    id: 2, emoji: '📋', grad: 'from-orange-400 to-red-400',
+    title: 'Thema planen', sub: 'Organiser un projet à deux',
+    greeting: 'Hallo! Wir sollen zusammen ein Abschlussfest für unseren Deutschkurs planen. Das Fest soll nächsten Samstag stattfinden. Wir haben ein Budget von 50 Euro. Hast du schon Ideen? Was sollen wir machen?',
+    system: `Du bist Anna, Prüfungspartnerin beim Goethe-Zertifikat B1 (Modul Sprechen, Teil 2: Ein Projekt gemeinsam planen).
+Thema: Abschlussfest für den Deutschkurs planen (Ort, Essen, Getränke, Musik, Geschenk für die Lehrkraft, Aufgabenverteilung, Budget).
+Nutze B1-Redemittel: "Was hältst du davon, wenn…?", "Wir könnten…", "Ich schlage vor, dass…", "Bist du einverstanden?", "Das ist eine gute Idee, aber…".
+
+WICHTIGE ANWEISUNGEN:
+1. Wenn ein Audio vorhanden ist, höre es dir aufmerksam an.
+2. Beurteile Aussprache, Interaktion, Vorschläge, Grammatik und Wortschatz.
+3. Antworte IMMER und AUSSCHLIESSLICH in diesem exakten Format:
+
+[PARTNER]
+Deine Reaktion auf Deutsch als Prüfungspartnerin Anna, mache einen konkreten Gegenvorschlag oder stimme zu und stelle eine neue Frage zur weiteren Planung…
+[/PARTNER]
+[FEEDBACK]
+{
+  "transcription": "Genaue Transkription dessen, was der Kandidat auf Deutsch gesagt hat",
+  "pronunciation": "Feedback détaillé en français sur la prononciation et le rythme de parole",
+  "grammar": "Explication en français des erreurs grammaticales et du choix des mots",
+  "suggestion": "Une formulation B1 plus fluide et naturelle en allemand pour proposer ou argumenter",
+  "score": 7.5,
+  "strengths": ["Proposition constructive", "Bonne réactivité"],
+  "improvements": ["Utiliser davantage de connecteurs B1"]
+}
+[/FEEDBACK]`,
+  },
+  {
+    id: 3, emoji: '❓', grad: 'from-red-400 to-pink-400',
+    title: 'Fragen & Antworten', sub: 'Poser et répondre à des questions',
+    greeting: 'Schau mal, ich habe hier ein Bild von einer Stadt mit vielen Fahrrädern und Autos. Was denkst du: Sollte man in Städten das Fahrradfahren mehr fördern und Autos verbieten? Warum (nicht)?',
+    system: `Du bist Anna, Prüfungspartnerin beim Goethe-Zertifikat B1 (Modul Sprechen, Teil 3: Thema präsentieren & Fragen beantworten / Meinungen äußern).
+Themenbereiche: Mobilität, Umwelt, Ernährung, Medien/Internet, Arbeit, Wohnen, Gesundheit.
+Nutze B1-Redemittel: "Meiner Meinung nach…", "Ein großer Vorteil ist…", "Auf der einen Seite…, auf der anderen Seite…", "In meinem Heimatland…".
+
+WICHTIGE ANWEISUNGEN:
+1. Wenn ein Audio vorhanden ist, höre es dir aufmerksam an.
+2. Beurteile Argumentation, Ausdrucksweise, Aussprache und grammatikalische Korrektheit.
+3. Antworte IMMER und AUSSCHLIESSLICH in diesem exakten Format:
+
+[PARTNER]
+Deine Reaktion auf Deutsch als Prüfungspartnerin Anna mit deiner eigenen Ansicht und einer anregenden Folgefrage…
+[/PARTNER]
+[FEEDBACK]
+{
+  "transcription": "Genaue Transkription dessen, was der Kandidat auf Deutsch gesagt hat",
+  "pronunciation": "Feedback détaillé en français sur la prononciation et l'intonation interrogative ou affirmative",
+  "grammar": "Explication en français de la structure des phrases et du vocabulaire argumentatif",
+  "suggestion": "Une phrase B1 convaincante et naturelle en allemand",
+  "score": 7.5,
+  "strengths": ["Arguments clairs", "Point de vue bien défendu"],
+  "improvements": ["Veiller aux propositions subordonnées (weil / obwohl)"]
+}
+[/FEEDBACK]`,
+  },
+];
+
+/* ═══════════════════════════════════════════
+   SETUP MODAL
+═══════════════════════════════════════════ */
+function SetupModal({ onSave }) {
+  const [key, setKey]     = useState('');
+  const [busy, setBusy]   = useState(false);
+  const [err, setErr]     = useState('');
+
+  const validate = async () => {
+    if (!key.trim()) { setErr('Veuillez entrer une clé API.'); return; }
+    setBusy(true); setErr('');
+    try {
+      await gemini(key.trim(), 'Respond in one word.', [], 'Say: ok');
+      db.set(K.API, key.trim());
+      onSave(key.trim());
+    } catch (e) {
+      setErr('Clé invalide ou erreur réseau : ' + e.message);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="card p-6 w-full max-w-sm fade-in">
+        <div className="text-center mb-5">
+          <div className="text-5xl mb-2">🔑</div>
+          <h2 className="text-xl font-extrabold text-gray-900">Connecter l'IA Gemini</h2>
+          <p className="text-sm text-gray-500 mt-1">Nécessaire pour le partenaire oral et l'analyse de sujets</p>
+        </div>
+
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 text-xs text-amber-800 space-y-1">
+          <p className="font-bold">📋 Clé API gratuite (30 secondes) :</p>
+          <p>1. Ouvrez <a href="https://aistudio.google.com/apikey" target="_blank" className="underline font-semibold">aistudio.google.com/apikey</a></p>
+          <p>2. Cliquez <strong>« Create API key »</strong></p>
+          <p>3. Copiez et collez ci-dessous 👇</p>
+        </div>
+
+        <input
+          value={key} onChange={e => setKey(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && validate()}
+          placeholder="AIzaSy..."
+          type="password"
+          className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm font-mono outline-none focus:border-orange-400 transition-colors"
+        />
+        {err && <p className="text-red-500 text-xs mt-2 font-medium">{err}</p>}
+
+        <button
+          onClick={validate} disabled={busy}
+          className="gradient-bg w-full text-white font-bold py-3 rounded-xl mt-4 text-sm disabled:opacity-60 transition-opacity"
+        >
+          {busy ? '⏳ Vérification…' : '✅ Valider et commencer'}
+        </button>
+
+        <p className="text-center text-xs text-gray-400 mt-3">
+          Votre clé reste stockée localement, jamais partagée.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   COUNTDOWN BANNER
+═══════════════════════════════════════════ */
+function CountdownBanner() {
+  const days = Math.max(0, Math.ceil((EXAM_DATE - new Date()) / 86400000));
+  return (
+    <div className="gradient-bg rounded-xl p-5 text-white mb-4 relative overflow-hidden">
+      <div className="absolute -right-4 -top-4 w-24 h-24 bg-white/10 rounded-full" />
+      <div className="absolute right-8 bottom-0 w-14 h-14 bg-white/10 rounded-full" />
+      <p className="text-sm opacity-90 font-medium">📅 Examen Goethe B1 — 24 Novembre 2026</p>
+      <p className="text-4xl font-extrabold mt-0.5">J – {days}</p>
+      <p className="text-sm opacity-75 mt-1">Chaque session compte. Tu peux le faire ! 💪</p>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   CHAT INTERFACE (Sprechen)
+═══════════════════════════════════════════ */
+function ChatInterface({ part, apiKey, onBack, onSessionEnd }) {
+  const [msgs, setMsgs]         = useState([{ role: 'ai', text: part.greeting, id: uid() }]);
+  const [textInput, setTextInput] = useState('');
+  const [loading, setLoading]   = useState(false);
+  const [openFB, setOpenFB]     = useState({});
+  const [savedPhrases, setSavedPhrases] = useState({});
+  const [scores, setScores]     = useState([]);
+  const bottomRef = useRef(null);
+
+  const voice = useVoiceRecorder();
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [msgs, loading, voice.recording, voice.audioUrl]);
+
+  const send = async (content, audioUrlToSend = null, audioBlobToSend = null) => {
+    const t = (content || '').trim();
+    if (!t && !audioUrlToSend && !audioBlobToSend) return;
+    if (loading) return;
+
+    if (voice.recording) voice.stop();
+    setTextInput('');
+    const finalAudioUrl = audioUrlToSend;
+    const finalAudioBlob = audioBlobToSend;
+    voice.reset();
+
+    const userMsg = {
+      role: 'user',
+      text: t || '🎙️ (Message vocal en cours d\'analyse…)',
+      audioUrl: finalAudioUrl,
+      id: uid(),
+    };
+    setMsgs(prev => [...prev, userMsg]);
+    setLoading(true);
+
+    try {
+      let audioPayload = null;
+      if (finalAudioBlob) {
+        try {
+          const b64 = await blobToBase64(finalAudioBlob);
+          const cleanMime = (finalAudioBlob.type || 'audio/webm').split(';')[0].trim() || 'audio/webm';
+          audioPayload = {
+            mimeType: cleanMime,
+            base64: b64,
+          };
+        } catch (err) {
+          console.warn('Erreur conversion audio en base64:', err);
+        }
+      }
+
+      const history = msgs.slice(-10).map(m => ({ role: m.role, text: m.text }));
+      let userPrompt = '';
+      if (audioPayload) {
+        userPrompt = t
+          ? `[Sprachnachricht als Audio angehängt. Vorläufige Erkennung: "${t}"]. Bitte höre das beigefügte Audio ganz genau an: Transkribiere das wirklich Gesprochene auf Deutsch, beurteile Aussprache (Laute, Betonung, Rhythmus) und Grammatik im FEEDBACK auf Französisch, und antworte auf Deutsch als Prüfungspartnerin Anna im PARTNER-Abschnitt.`
+          : `[Sprachnachricht als Audio angehängt]. Bitte höre das beigefügte Audio ganz genau an: Transkribiere das Gesprochene auf Deutsch, bewerte Aussprache (Laute, Betonung, Rhythmus) und Grammatik im FEEDBACK auf Französisch, und antworte auf Deutsch als Prüfungspartnerin Anna im PARTNER-Abschnitt.`;
+      } else {
+        userPrompt = t;
+      }
+
+      const raw = await gemini(apiKey, part.system, history, userPrompt, { audio: audioPayload });
+      const { partner, feedback } = parseChat(raw);
+
+      if (feedback?.score) setScores(s => [...s, Number(feedback.score)]);
+
+      setMsgs(prev => {
+        const updated = [...prev];
+        const last = updated[updated.length - 1];
+        if (last && last.role === 'user' && last.id === userMsg.id) {
+          const finalDisplay = feedback?.transcription
+            ? feedback.transcription
+            : (t || '🎙️ Message vocal');
+          updated[updated.length - 1] = {
+            ...last,
+            text: finalDisplay,
+            feedback,
+          };
+        }
+        return [...updated, { role: 'ai', text: partner, id: uid() }];
+      });
+
+      // Ouvrir automatiquement le feedback pour que l'étudiant voie les corrections
+      setOpenFB(p => ({ ...p, [userMsg.id]: true }));
+    } catch (e) {
+      setMsgs(prev => [...prev, { role: 'ai', text: `⚠️ Erreur : ${e.message}`, id: uid() }]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const finish = () => {
+    if (voice.recording) voice.stop();
+    voice.reset();
+    if (scores.length > 0) {
+      const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+      onSessionEnd({ partId: part.id, partTitle: part.title, score: avg, exchanges: scores.length, date: new Date().toISOString() });
+    }
+    onBack();
+  };
+
+  const saveFeedbackPhrase = (msgId, phrase) => {
+    const notebook = db.get(K.NOTEBOOK, []);
+    const clean = phrase.replace(/[«»"]/g, '').trim();
+    if (!clean) return;
+    const exists = notebook.some(w => (w.de || '').toLowerCase() === clean.toLowerCase());
+    if (!exists) {
+      const newWord = {
+        id: uid(),
+        de: clean,
+        fr: 'Expression vue en simulation orale (Teil ' + part.id + ')',
+        cat: 'Expression',
+        plural: '',
+        example: clean,
+        addedAt: Date.now(),
+        reviewCount: 0,
+        source: 'oral',
+        lastReviewed: null,
+      };
+      db.set(K.NOTEBOOK, [newWord, ...notebook]);
+    }
+    setSavedPhrases(p => ({ ...p, [msgId]: true }));
+  };
+
+  const avgScore = scores.length ? (scores.reduce((a,b)=>a+b,0)/scores.length).toFixed(1) : null;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-gray-50 flex flex-col fade-in">
+      {/* Header */}
+      <div className="shrink-0 flex items-center gap-3 px-4 py-3 bg-white border-b shadow-sm">
+        <button onClick={finish} className="w-9 h-9 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center shrink-0 transition-colors">
+          <svg className="w-5 h-5 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7"/></svg>
+        </button>
+        <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${part.grad} flex items-center justify-center text-xl shrink-0 shadow-sm`}>{part.emoji}</div>
+        <div className="flex-1 min-w-0">
+          <p className="font-bold text-gray-900 text-sm truncate">Teil {part.id} — {part.title}</p>
+          <div className="flex items-center gap-2">
+            <span className="inline-block w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+            <span className="text-xs text-gray-500">Prüfungspartnerin Anna</span>
+          </div>
+        </div>
+        {avgScore && (
+          <div className="text-right shrink-0 bg-orange-50 border border-orange-200 px-2.5 py-1 rounded-xl">
+            <p className="text-[10px] uppercase font-bold text-orange-600 tracking-wider">Moyenne</p>
+            <p className={`font-extrabold text-sm ${Number(avgScore)>=7?'text-green-600':Number(avgScore)>=5?'text-orange-500':'text-red-500'}`}>{avgScore}/10</p>
+          </div>
+        )}
+      </div>
+
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+        {msgs.map((m) => (
+          <div key={m.id} className={`flex ${m.role==='user'?'justify-end':'justify-start'} fade-in`}>
+            <div className="max-w-[85%]">
+              {m.role === 'ai' && (
+                <div className="flex items-center justify-between mb-1 ml-1 text-xs text-gray-400">
+                  <span className="font-semibold flex items-center gap-1">🤖 Anna (Examinatrice B1)</span>
+                  <button
+                    onClick={() => speakGerman(m.text)}
+                    className="text-[11px] text-orange-600 hover:text-orange-800 font-bold flex items-center gap-1 bg-orange-50 px-2 py-0.5 rounded-md"
+                    title="Écouter la prononciation allemande d'Anna"
+                  >
+                    🔊 Écouter Anna
+                  </button>
+                </div>
+              )}
+
+              <div className={m.role==='user'?'bubble-user p-3.5 shadow-sm':'bubble-ai p-3.5 shadow-sm border border-gray-100'}>
+                {/* If user recorded audio, display the audio player in the message! */}
+                {m.audioUrl && (
+                  <div className="mb-2 bg-black/10 rounded-xl p-2.5 border border-white/20">
+                    <p className="text-[11px] font-extrabold uppercase tracking-wider mb-1.5 opacity-90 flex items-center gap-1.5">
+                      <span>🎙️</span> Votre enregistrement vocal brut :
+                    </p>
+                    <audio controls src={m.audioUrl} className="w-full h-8 rounded-lg" />
+                  </div>
+                )}
+                <p className="text-sm leading-relaxed whitespace-pre-wrap">{m.text}</p>
+              </div>
+
+              {m.feedback && (
+                <div className="mt-2 ml-1">
+                  <button
+                    onClick={() => setOpenFB(p => ({ ...p, [m.id]: !p[m.id] }))}
+                    className="text-xs font-bold text-orange-600 bg-orange-50 border border-orange-200 px-3 py-1.5 rounded-lg flex items-center gap-2 hover:bg-orange-100 transition-colors shadow-xs"
+                  >
+                    <span>{openFB[m.id] ? '▼' : '▶'}</span>
+                    <span>Évaluation & Correction Sprechen</span>
+                    {m.feedback.score && (
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-extrabold ${Number(m.feedback.score)>=7?'bg-green-100 text-green-700':Number(m.feedback.score)>=5?'bg-orange-200 text-orange-800':'bg-red-100 text-red-600'}`}>
+                        {m.feedback.score}/10
+                      </span>
+                    )}
+                  </button>
+
+                  {openFB[m.id] && (
+                    <div className="mt-2 bg-amber-50/90 border border-amber-200 rounded-2xl p-3.5 text-xs space-y-3 fade-in shadow-sm">
+                      {/* Transcription de ce que l'examinatrice a entendu */}
+                      {m.feedback.transcription && (
+                        <div className="bg-white p-2.5 rounded-xl border border-amber-200">
+                          <p className="font-extrabold text-amber-900 mb-1 flex items-center gap-1.5">
+                            <span>👂</span> Ce que l'examinatrice a entendu dans votre audio :
+                          </p>
+                          <p className="text-gray-900 italic font-medium pl-2 border-l-2 border-amber-400">
+                            « {m.feedback.transcription} »
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Prononciation & Intonation */}
+                      {m.feedback.pronunciation && (
+                        <div className="bg-white p-2.5 rounded-xl border border-blue-200">
+                          <p className="font-extrabold text-blue-900 mb-1 flex items-center gap-1.5">
+                            <span>🗣️</span> Prononciation & Intonation :
+                          </p>
+                          <p className="text-gray-800 pl-2 border-l-2 border-blue-400 leading-relaxed">
+                            {m.feedback.pronunciation}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Grammaire & Structure B1 */}
+                      {m.feedback.grammar && (
+                        <div className="bg-white p-2.5 rounded-xl border border-red-200">
+                          <p className="font-extrabold text-red-900 mb-1 flex items-center gap-1.5">
+                            <span>⚠️</span> Grammaire & Structure de phrase :
+                          </p>
+                          <p className="text-gray-800 pl-2 border-l-2 border-red-400 leading-relaxed">
+                            {m.feedback.grammar}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Tournure B1 naturelle avec bouton Écouter et bouton Ajouter */}
+                      {m.feedback.suggestion && (
+                        <div className="bg-gradient-to-r from-green-50 to-emerald-50 p-3 rounded-xl border border-green-300">
+                          <p className="font-extrabold text-green-900 mb-1 flex items-center gap-1.5">
+                            <span>💡</span> Tournure B1 plus naturelle / Modèle :
+                          </p>
+                          <p className="text-gray-900 font-semibold italic text-sm pl-2 border-l-2 border-green-500 mb-2.5">
+                            « {m.feedback.suggestion} »
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              onClick={() => speakGerman(m.feedback.suggestion)}
+                              className="text-xs bg-white hover:bg-gray-100 text-gray-800 font-bold px-2.5 py-1.5 rounded-lg border border-gray-200 flex items-center gap-1 shadow-xs transition-colors"
+                            >
+                              🔊 Écouter la prononciation
+                            </button>
+                            <button
+                              onClick={() => saveFeedbackPhrase(m.id, m.feedback.suggestion)}
+                              className={`text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all shadow-xs ${
+                                savedPhrases[m.id]
+                                  ? 'bg-green-600 text-white'
+                                  : 'gradient-bg text-white hover:opacity-90'
+                              }`}
+                            >
+                              {savedPhrases[m.id] ? '✅ Ajouté au bloc-notes !' : '➕ Ajouter au bloc-notes'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Points forts */}
+                      {m.feedback.strengths && (
+                        <div className="bg-white/80 p-2 rounded-lg border border-emerald-200">
+                          <span className="font-bold text-emerald-800">✅ Points forts : </span>
+                          <span className="text-gray-800">{Array.isArray(m.feedback.strengths) ? m.feedback.strengths.join(' · ') : m.feedback.strengths}</span>
+                        </div>
+                      )}
+
+                      {/* Points à améliorer */}
+                      {m.feedback.improvements && (
+                        <div className="bg-white/80 p-2 rounded-lg border border-purple-200">
+                          <span className="font-bold text-purple-800">📈 Conseils pour l'examen : </span>
+                          <span className="text-gray-800">{Array.isArray(m.feedback.improvements) ? m.feedback.improvements.join(' · ') : m.feedback.improvements}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+
+        {loading && (
+          <div className="flex justify-start fade-in">
+            <div className="bubble-ai px-4 py-3 flex items-center gap-2 shadow-sm">
+              <span className="text-xs text-orange-600 font-semibold animate-pulse">
+                🎙️ Anna écoute votre vocal brut, analyse la prononciation et prépare sa réponse…
+              </span>
+              <div className="flex gap-1">
+                {[0,1,2].map(i => (
+                  <div key={i} className="w-2 h-2 bg-orange-400 rounded-full dot-bounce" style={{ animationDelay: `${i*0.15}s` }} />
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Input Bar & Voice Recording Preview */}
+      <div className="shrink-0 bg-white border-t p-3 shadow-lg z-20">
+        {/* CASE 1: Active recording in progress */}
+        {voice.recording && (
+          <div className="flex items-center justify-between gap-3 bg-red-50 border border-red-200 p-3 rounded-2xl fade-in animate-pulse">
+            <div className="flex items-center gap-2.5">
+              <span className="w-3.5 h-3.5 rounded-full bg-red-500 animate-ping"></span>
+              <div>
+                <p className="font-extrabold text-sm text-red-700">Enregistrement audio en cours ({voice.recordSecs}s)</p>
+                <p className="text-xs text-red-500">Parlez en allemand… appuyez sur Arrêter pour réécouter</p>
+              </div>
+            </div>
+            <button
+              onClick={voice.stop}
+              className="bg-red-600 hover:bg-red-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl shadow-md flex items-center gap-1.5 shrink-0"
+            >
+              <span>⏹️</span> Arrêter
+            </button>
+          </div>
+        )}
+
+        {/* CASE 2: Audio recorded, WAITING in Preview Mode (User listens to their recording before sending!) */}
+        {!voice.recording && voice.audioUrl && (
+          <div className="bg-orange-50/80 border border-orange-200 p-3.5 rounded-2xl fade-in space-y-2.5 shadow-sm">
+            <div className="flex items-center justify-between">
+              <p className="font-extrabold text-xs text-orange-950 flex items-center gap-1.5">
+                <span>🎧</span> Réécoutez votre enregistrement ({voice.recordSecs}s) :
+              </p>
+              <span className="text-[11px] font-bold text-orange-700 bg-orange-100 px-2 py-0.5 rounded-md">
+                Prêt pour analyse brute
+              </span>
+            </div>
+
+            {/* Real audio player so user can listen to their own voice! */}
+            <audio controls src={voice.audioUrl} className="w-full h-9 rounded-lg" />
+
+            {/* Transcription preview with editing capability */}
+            <div>
+              <label className="text-[11px] font-bold text-gray-600 block mb-1">
+                Texte détecté en direct (optionnel — l'IA analysera directement le son de votre voix) :
+              </label>
+              <input
+                type="text"
+                value={voice.transcript}
+                onChange={e => voice.setTranscript(e.target.value)}
+                placeholder="Votre phrase en allemand (ex: Ich heiße Alex...)"
+                className="w-full bg-white border border-orange-200 rounded-xl px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-orange-300 font-medium"
+              />
+            </div>
+
+            {/* Action buttons: Re-record vs Send to AI */}
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={voice.reset}
+                className="flex-1 bg-white hover:bg-gray-100 text-gray-700 border border-gray-200 font-extrabold text-xs py-2.5 rounded-xl flex items-center justify-center gap-1.5 transition-colors"
+              >
+                <span>🔄</span> Réenregistrer
+              </button>
+              <button
+                type="button"
+                onClick={() => send(voice.transcript, voice.audioUrl, voice.audioBlob)}
+                disabled={loading}
+                className="flex-1 gradient-bg hover:opacity-95 text-white font-extrabold text-xs py-2.5 rounded-xl shadow-md flex items-center justify-center gap-1.5 transition-all disabled:opacity-50"
+              >
+                <span>🚀</span> Envoyer à l'IA
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* CASE 3: Normal idle state (Mic button + text input) */}
+        {!voice.recording && !voice.audioUrl && (
+          <div className="flex items-center gap-2">
+            {/* Record Voice Button */}
+            <button
+              type="button"
+              onClick={voice.start}
+              className="px-3.5 py-2.5 rounded-full bg-orange-100 hover:bg-orange-200 text-orange-800 font-extrabold text-xs flex items-center gap-1.5 shrink-0 transition-colors shadow-xs"
+              title="Enregistrer un message vocal"
+            >
+              <span className="text-base">🎙️</span>
+              <span>Parler</span>
+            </button>
+
+            {/* Or type text */}
+            <div className="flex-1 relative flex items-center">
+              <input
+                type="text"
+                value={textInput}
+                onChange={e => setTextInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && !loading && textInput.trim()) {
+                    e.preventDefault();
+                    send(textInput);
+                  }
+                }}
+                placeholder="Ou écrivez votre réponse en allemand…"
+                className="w-full rounded-full pl-4 pr-9 py-2.5 text-sm outline-none bg-gray-100 focus:bg-white text-gray-900 border border-gray-200 focus:border-orange-400 focus:ring-2 focus:ring-orange-200 transition-all"
+              />
+              {textInput && (
+                <button
+                  type="button"
+                  onClick={() => setTextInput('')}
+                  className="absolute right-3 w-5 h-5 rounded-full bg-gray-200 hover:bg-gray-300 text-gray-500 flex items-center justify-center text-xs font-bold"
+                  title="Effacer"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            {/* Send button for text */}
+            <button
+              type="button"
+              onClick={() => send(textInput)}
+              disabled={loading || !textInput.trim()}
+              className="w-11 h-11 rounded-full gradient-bg flex items-center justify-center shrink-0 text-white shadow-md hover:shadow-lg disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+              title="Envoyer le texte"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M5 12h14M12 5l7 7-7 7"/>
+              </svg>
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   DASHBOARD TAB
+═══════════════════════════════════════════ */
+function Dashboard({ apiKey, onSessionEnd }) {
+  const [chat, setChat] = useState(null);
+  const sessions = db.get(K.SESSIONS, []);
+
+  if (chat) {
+    return (
+      <ChatInterface
+        part={chat} apiKey={apiKey}
+        onBack={() => setChat(null)}
+        onSessionEnd={s => { onSessionEnd(s); setChat(null); }}
+      />
+    );
+  }
+
+  return (
+    <div className="p-4 pb-28 fade-in">
+      <h1 className="text-xl font-extrabold text-gray-900 mb-0.5">Guten Tag, Rony! 👋</h1>
+      <p className="text-sm text-gray-500 mb-4">Prêt pour l'entraînement B1 ?</p>
+      <CountdownBanner />
+
+      <h2 className="text-base font-bold text-gray-800 mb-3">🎙️ Sprechen — Simulation d'oral</h2>
+      <div className="space-y-3 mb-6">
+        {PARTS.map(p => {
+          const ps = sessions.filter(s => s.partId === p.id);
+          const avg = ps.length ? (ps.reduce((a,b)=>a+b.score,0)/ps.length).toFixed(1) : null;
+          return (
+            <button key={p.id} onClick={() => setChat(p)}
+              className="card w-full p-4 flex items-center gap-4 text-left hover:scale-[1.01] active:scale-[.99] transition-transform">
+              <div className={`w-14 h-14 rounded-xl bg-gradient-to-br ${p.grad} flex items-center justify-center text-2xl shrink-0`}>{p.emoji}</div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Teil {p.id}</p>
+                <p className="font-bold text-gray-900">{p.title}</p>
+                <p className="text-xs text-gray-500">{p.sub}</p>
+              </div>
+              <div className="text-right shrink-0">
+                {avg
+                  ? <><p className="text-xs text-gray-400">Moy.</p><p className={`font-bold ${Number(avg)>=7?'text-green-600':Number(avg)>=5?'text-orange-500':'text-red-500'}`}>{avg}/10</p></>
+                  : <span className="text-xs text-gray-300 italic">Pas encore</span>}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {sessions.length > 0 && (
+        <>
+          <h2 className="text-base font-bold text-gray-800 mb-3">📈 Dernières sessions</h2>
+          <div className="space-y-2">
+            {[...sessions].reverse().slice(0,4).map((s,i) => (
+              <div key={i} className="card p-3 flex items-center gap-3">
+                <span className="text-2xl">{s.partId===99?'📝':['🗣️','📋','❓'][s.partId-1]||'🎙️'}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-gray-800 truncate">{s.partTitle}</p>
+                  <p className="text-xs text-gray-400">{new Date(s.date).toLocaleDateString('fr-FR',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</p>
+                </div>
+                <span className={`font-bold text-sm ${s.score>=7?'text-green-600':s.score>=5?'text-orange-500':'text-red-500'}`}>{s.score.toFixed(1)}/10</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   VOCABULARY BANK (30 Curated B1 Words)
+═══════════════════════════════════════════ */
+const DAILY_BANK_30 = [
+  // 10 Adjektive
+  { de: 'wichtig', fr: 'important', cat: 'Adjektiv', example: 'Pünktlichkeit ist in Deutschland sehr wichtig.' },
+  { de: 'günstig', fr: 'avantageux / bon marché', cat: 'Adjektiv', example: 'Wir suchen eine günstige Wohnung in der Stadt.' },
+  { de: 'zufrieden', fr: 'satisfait', cat: 'Adjektiv', example: 'Ich bin mit meinem Deutschkurs sehr zufrieden.' },
+  { de: 'freundlich', fr: 'aimable / chaleureux', cat: 'Adjektiv', example: 'Die Prüfer sind sehr freundlich und hilfsbereit.' },
+  { de: 'möglich', fr: 'possible', cat: 'Adjektiv', example: 'Ist es möglich, den Termin auf morgen zu verschieben?' },
+  { de: 'unterschiedlich', fr: 'différent / varié', cat: 'Adjektiv', example: 'Wir haben sehr unterschiedliche Meinungen.' },
+  { de: 'praktisch', fr: 'pratique', cat: 'Adjektiv', example: 'Das Fahrrad ist sehr praktisch in der Stadt.' },
+  { de: 'notwendig', fr: 'nécessaire', cat: 'Adjektiv', example: 'Ein B1-Zertifikat ist für die Einbürgerung notwendig.' },
+  { de: 'berühmt', fr: 'célèbre', cat: 'Adjektiv', example: 'Berlin ist berühmt für seine Museen und Kultur.' },
+  { de: 'selbstständig', fr: 'autonome / indépendant', cat: 'Adjektiv', example: 'Ich kann jetzt selbstständig Formulare ausfüllen.' },
+
+  // 10 Verben
+  { de: 'bestehen', fr: 'réussir (un examen)', cat: 'Verb', example: 'Ich möchte die B1-Prüfung im ersten Versuch bestehen.' },
+  { de: 'sich vorbereiten', fr: 'se préparer', cat: 'Verb', example: 'Ich bereite mich jeden Tag auf die mündliche Prüfung vor.' },
+  { de: 'vorschlagen', fr: 'proposer', cat: 'Verb', example: 'Ich schlage vor, dass wir uns am Samstag um 10 Uhr treffen.' },
+  { de: 'sich entscheiden', fr: 'se décider / choisir', cat: 'Verb', example: 'Ich habe mich für einen Intensivkurs entschieden.' },
+  { de: 'vergleichen', fr: 'comparer', cat: 'Verb', example: 'Man sollte die verschiedenen Angebote genau vergleichen.' },
+  { de: 'verbessern', fr: 'améliorer', cat: 'Verb', example: 'Ich möchte meine Aussprache und Grammatik verbessern.' },
+  { de: 'teilnehmen', fr: 'participer à', cat: 'Verb', example: 'Wir nehmen am Wochenende an einer Konferenz teil.' },
+  { de: 'sich bewerben', fr: 'postuler', cat: 'Verb', example: 'Ich habe mich um eine neue Arbeitsstelle beworben.' },
+  { de: 'empfehlen', fr: 'recommander', cat: 'Verb', example: 'Können Sie mir ein gutes deutsches Buch empfehlen?' },
+  { de: 'sich gewöhnen', fr: 's\'habituer', cat: 'Verb', example: 'Ich habe mich schnell an das Leben hier gewöhnt.' },
+
+  // 10 Nomen (avec article et pluriel)
+  { de: 'die Erfahrung', fr: 'l\'expérience', cat: 'Nomen', plural: 'die Erfahrungen', example: 'Auslandsreisen bringen sehr viel wertvolle Erfahrung.' },
+  { de: 'der Vorteil', fr: 'l\'avantage', cat: 'Nomen', plural: 'die Vorteile', example: 'Ein großer Vorteil ist die zentrale Lage der Wohnung.' },
+  { de: 'die Meinung', fr: 'l\'avis / l\'opinion', cat: 'Nomen', plural: 'die Meinungen', example: 'Meiner Meinung nach sollten wir mehr Deutsch sprechen.' },
+  { de: 'das Ergebnis', fr: 'le résultat', cat: 'Nomen', plural: 'die Ergebnisse', example: 'Das Prüfungsergebnis wird in zwei Wochen bekanntgegeben.' },
+  { de: 'die Veranstaltung', fr: 'l\'événement / manifestation', cat: 'Nomen', plural: 'die Veranstaltungen', example: 'Die Kulturveranstaltung findet im Stadtzentrum statt.' },
+  { de: 'der Vorschlag', fr: 'la proposition', cat: 'Nomen', plural: 'die Vorschläge', example: 'Das ist ein hervorragender Vorschlag!' },
+  { de: 'die Ausbildung', fr: 'la formation professionnelle', cat: 'Nomen', plural: 'die Ausbildungen', example: 'Nach der Schule hat er eine Ausbildung zum Koch begonnen.' },
+  { de: 'das Ziel', fr: 'l\'objectif / le but', cat: 'Nomen', plural: 'die Ziele', example: 'Mein wichtigstes Ziel ist das B1-Zertifikat.' },
+  { de: 'die Lösung', fr: 'la solution', cat: 'Nomen', plural: 'die Lösungen', example: 'Gemeinsam finden wir sicher eine gute Lösung.' },
+  { de: 'der Unterschied', fr: 'la différence', cat: 'Nomen', plural: 'die Unterschiede', example: 'Es gibt einen deutlichen Unterschied zwischen den Optionen.' },
+];
+
+/* ═══════════════════════════════════════════
+   VOCABULARY TAB
+═══════════════════════════════════════════ */
+function VocabTab({ apiKey }) {
+  const [notebook, setNotebook] = useState(() => db.get(K.NOTEBOOK, []));
+  const [discoverList, setDiscoverList] = useState(() => DAILY_BANK_30);
+  const [view, setView]         = useState('discover'); // discover | notebook | review | add
+  const [filter, setFilter]     = useState('all');
+  const [search, setSearch]     = useState('');
+  const [expanded, setExpanded] = useState({});
+  const [form, setForm]         = useState({ de:'', fr:'', cat:'Verb', plural:'', example:'' });
+  const [genBusy, setGenBusy]   = useState(false);
+  const [toast, setToast]       = useState(null);
+
+  const showToast = msg => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 2500);
+  };
+
+  const saveNotebook = useCallback(nb => {
+    setNotebook(nb);
+    db.set(K.NOTEBOOK, nb);
+  }, []);
+
+  const today = new Date().toDateString();
+
+  // Spaced review list
+  const dailySugg = useMemo(() =>
+    notebook
+      .filter(w => w.lastReviewed !== today)
+      .sort((a,b) => (a.reviewCount||0) - (b.reviewCount||0))
+      .slice(0, 15),
+    [notebook, today]
+  );
+
+  const catCls = cat => {
+    const c = (cat || '').toLowerCase();
+    if (c.startsWith('verb')) return 'bg-green-100 text-green-700';
+    if (c.startsWith('adj'))  return 'bg-blue-100 text-blue-700';
+    if (c.startsWith('nom'))  return 'bg-purple-100 text-purple-700';
+    return 'bg-orange-100 text-orange-700';
+  };
+
+  // 1-Click Toggle for notebook
+  const toggleNotebookWord = word => {
+    const exists = notebook.some(w => (w.de || '').trim().toLowerCase() === (word.de || '').trim().toLowerCase());
+    if (exists) {
+      const updated = notebook.filter(w => (w.de || '').trim().toLowerCase() !== (word.de || '').trim().toLowerCase());
+      saveNotebook(updated);
+      showToast(`« ${word.de} » retiré du bloc-notes`);
+    } else {
+      const newWord = {
+        id: uid(),
+        de: word.de.trim(),
+        fr: word.fr ? word.fr.trim() : '',
+        cat: word.cat || 'Nomen',
+        plural: word.plural || '',
+        example: word.example || '',
+        addedAt: Date.now(),
+        reviewCount: 0,
+        source: word.source || 'daily_bank',
+        lastReviewed: null,
+      };
+      saveNotebook([newWord, ...notebook]);
+      showToast(`✅ « ${word.de} » ajouté au bloc-notes !`);
+    }
+  };
+
+  // Add all words from current view
+  const addAllToNotebook = listToAdd => {
+    const existing = new Set(notebook.map(w => (w.de || '').toLowerCase()));
+    const fresh = listToAdd
+      .filter(w => !existing.has((w.de || '').toLowerCase()))
+      .map(w => ({
+        id: uid(),
+        de: w.de.trim(),
+        fr: w.fr || '',
+        cat: w.cat || 'Nomen',
+        plural: w.plural || '',
+        example: w.example || '',
+        addedAt: Date.now(),
+        reviewCount: 0,
+        source: 'daily_bank_batch',
+        lastReviewed: null,
+      }));
+    if (fresh.length > 0) {
+      saveNotebook([...fresh, ...notebook]);
+      showToast(`🎉 ${fresh.length} mots ajoutés au bloc-notes !`);
+    } else {
+      showToast('Tous ces mots sont déjà dans votre bloc-notes !');
+    }
+  };
+
+  const markReviewed = id => {
+    saveNotebook(notebook.map(w => w.id === id ? { ...w, lastReviewed: today, reviewCount: (w.reviewCount||0) + 1 } : w));
+    showToast('✓ Mot marqué comme révisé');
+  };
+
+  const deleteWord = id => {
+    saveNotebook(notebook.filter(w => w.id !== id));
+    showToast('Mot supprimé');
+  };
+
+  const addManualWord = () => {
+    if (!form.de.trim() || !form.fr.trim()) return;
+    const w = {
+      ...form,
+      id: uid(),
+      addedAt: Date.now(),
+      reviewCount: 0,
+      source: 'manual',
+      lastReviewed: null,
+    };
+    saveNotebook([w, ...notebook]);
+    setForm({ de:'', fr:'', cat:'Verb', plural:'', example:'' });
+    showToast(`✅ « ${w.de} » ajouté au bloc-notes !`);
+    setView('notebook');
+  };
+
+  // Generate with AI
+  const generateWithAI = async () => {
+    if (!apiKey) {
+      alert('Veuillez d\'abord configurer votre clé API dans Profil.');
+      return;
+    }
+    setGenBusy(true);
+    try {
+      const existing = notebook.slice(-15).map(w => w.de).join(', ');
+      const prompt = `Génère exactement 10 mots de vocabulaire allemand indispensables pour le Goethe-Zertifikat B1.
+Mélange Adjektive, Verben et Nomen.
+Thèmes du quotidien ou examen (logement, travail, santé, environnement).
+Ne répète pas ces mots: ${existing || 'aucun'}.
+Réponds UNIQUEMENT par un tableau JSON valide au format:
+[
+  {"de":"die Erfahrung","fr":"l'expérience","cat":"Nomen","plural":"die Erfahrungen","example":"Ich habe viel Erfahrung gesammelt."},
+  {"de":"vorschlagen","fr":"proposer","cat":"Verb","example":"Ich schlage vor, dass wir ins Kino gehen."},
+  {"de":"günstig","fr":"avantageux","cat":"Adjektiv","example":"Das Ticket ist sehr günstig."}
+]`;
+
+      const result = await gemini(apiKey, 'Tu es un enseignant certifié d\'allemand B1.', [], prompt, { json: true, temperature: 0.9 });
+      if (Array.isArray(result) && result.length > 0) {
+        setDiscoverList(result);
+        setView('discover');
+        showToast('✨ 10 nouveaux mots générés par l\'IA !');
+      } else {
+        showToast('Erreur de format de réponse IA.');
+      }
+    } catch (e) {
+      alert('Erreur IA : ' + e.message);
+    } finally {
+      setGenBusy(false);
+    }
+  };
+
+  // Filtered lists
+  const currentList = view === 'discover' ? discoverList : notebook;
+  const filtered = useMemo(() => {
+    let list = [...currentList];
+    if (filter !== 'all') {
+      list = list.filter(w => (w.cat || '').toLowerCase().startsWith(filter));
+    }
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter(w => (w.de || '').toLowerCase().includes(q) || (w.fr || '').toLowerCase().includes(q));
+    }
+    return list;
+  }, [currentList, filter, search]);
+
+  return (
+    <div className="pb-28 fade-in relative">
+      {/* Toast Notification */}
+      {toast && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-gray-900/90 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-lg backdrop-blur-sm fade-in flex items-center gap-2">
+          <span>{toast}</span>
+        </div>
+      )}
+
+      {/* Sub-tabs Navigation */}
+      <div className="bg-white border-b sticky top-0 z-10 shadow-sm">
+        <div className="flex overflow-x-auto">
+          {[
+            { k: 'discover', l: `✨ Découvrir (30)` },
+            { k: 'notebook', l: `📔 Mon Bloc-notes (${notebook.length})` },
+            { k: 'review',   l: `🔔 Révision (${dailySugg.length})` },
+            { k: 'add',      l: '✍️ Ajouter' },
+          ].map(v => (
+            <button
+              key={v.k}
+              onClick={() => { setView(v.k); setSearch(''); setFilter('all'); }}
+              className={`flex-1 py-3 px-2 text-xs font-bold border-b-2 whitespace-nowrap transition-colors ${
+                view === v.k ? 'border-orange-500 text-orange-600 bg-orange-50/40' : 'border-transparent text-gray-500 hover:text-gray-800'
+              }`}
+            >
+              {v.l}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── 1. DÉCOUVRIR (30 MOTS DU JOUR + IA) ── */}
+      {view === 'discover' && (
+        <div className="p-4">
+          <div className="gradient-bg rounded-2xl p-4 text-white mb-4 shadow-sm relative overflow-hidden">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <p className="text-xs uppercase tracking-wider font-extrabold text-amber-100">Générateur B1</p>
+                <h2 className="text-lg font-extrabold mt-0.5">30 Mots Quotidiens</h2>
+                <p className="text-xs opacity-90 mt-0.5">Cliquez sur « ➕ Ajouter au bloc-notes » pour enregistrer chaque mot !</p>
+              </div>
+              <button
+                onClick={() => addAllToNotebook(filtered)}
+                className="bg-white text-orange-600 font-extrabold text-xs px-3 py-2 rounded-xl shadow shrink-0 hover:bg-orange-50 transition-colors"
+              >
+                + Tout ajouter
+              </button>
+            </div>
+
+            <div className="flex gap-2 mt-3 pt-3 border-t border-white/20">
+              <button
+                onClick={() => { setDiscoverList(DAILY_BANK_30); showToast('30 mots du jour rechargés !'); }}
+                className="bg-white/20 hover:bg-white/30 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 transition-colors"
+              >
+                🔄 30 mots standards
+              </button>
+              <button
+                onClick={generateWithAI}
+                disabled={genBusy}
+                className="bg-white/20 hover:bg-white/30 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 transition-colors disabled:opacity-50"
+              >
+                {genBusy ? '⏳ Génération IA…' : '🤖 10 mots IA inédits'}
+              </button>
+            </div>
+          </div>
+
+          {/* Search + Category chips */}
+          <div className="relative mb-3">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z"/></svg>
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Rechercher en allemand ou français…"
+              className="w-full card pl-10 pr-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-orange-300 border border-gray-100"
+            />
+          </div>
+
+          <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
+            {[
+              ['all', 'Tous (' + discoverList.length + ')'],
+              ['adj', '🔵 Adjektive'],
+              ['verb', '🟢 Verben'],
+              ['nom', '🟣 Nomen'],
+            ].map(([k, l]) => (
+              <button
+                key={k}
+                onClick={() => setFilter(k)}
+                className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-colors ${
+                  filter === k ? 'gradient-bg text-white shadow' : 'card text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                {l}
+              </button>
+            ))}
+          </div>
+
+          {/* Word list */}
+          <div className="space-y-2.5">
+            {filtered.map((w, idx) => {
+              const isSaved = notebook.some(n => (n.de || '').trim().toLowerCase() === (w.de || '').trim().toLowerCase());
+              const key = `disc-${idx}-${w.de}`;
+              const isExp = expanded[key];
+
+              return (
+                <div key={key} className="card p-3.5 border border-gray-100 transition-all hover:shadow-md">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+                        <span className={`tag ${catCls(w.cat)}`}>{w.cat}</span>
+                        {w.plural && <span className="text-xs text-gray-400">Pl: {w.plural}</span>}
+                      </div>
+                      <p className="font-extrabold text-gray-900 text-base">{w.de}</p>
+                      <p className="text-sm text-gray-600 font-medium">{w.fr}</p>
+                    </div>
+
+                    {/* Prominent 1-click add button */}
+                    <button
+                      type="button"
+                      onClick={() => toggleNotebookWord(w)}
+                      className={`shrink-0 px-3 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all shadow-sm ${
+                        isSaved
+                          ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                          : 'gradient-bg text-white hover:opacity-90 active:scale-95'
+                      }`}
+                    >
+                      {isSaved ? (
+                        <><span>✓</span><span>Dans le bloc-notes</span></>
+                      ) : (
+                        <><span>➕</span><span>Ajouter au bloc-notes</span></>
+                      )}
+                    </button>
+                  </div>
+
+                  {w.example && (
+                    <div className="mt-2.5 pt-2 border-t border-gray-100">
+                      <button
+                        onClick={() => setExpanded(p => ({ ...p, [key]: !p[key] }))}
+                        className="text-xs text-gray-500 font-semibold hover:text-orange-600 flex items-center gap-1"
+                      >
+                        <span>{isExp ? '▴ Masquer exemple' : '▾ Voir exemple en phrase'}</span>
+                      </button>
+                      {isExp && (
+                        <div className="mt-1.5 bg-gray-50 rounded-xl p-2.5 text-xs text-gray-800 italic fade-in border border-gray-100">
+                          « {w.example} »
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── 2. MON BLOC-NOTES (MOTS SAUVEGARDÉS) ── */}
+      {view === 'notebook' && (
+        <div className="p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h2 className="text-base font-extrabold text-gray-900">📔 Mon Bloc-notes personnel</h2>
+              <p className="text-xs text-gray-500">Tous vos mots sauvegardés (ne sont jamais perdus)</p>
+            </div>
+            <span className="text-xs font-bold text-orange-600 bg-orange-50 px-2.5 py-1 rounded-full border border-orange-200">
+              {notebook.length} mot{notebook.length > 1 ? 's' : ''}
+            </span>
+          </div>
+
+          {/* Search + Filter */}
+          <div className="relative mb-3">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z"/></svg>
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Rechercher dans mon bloc-notes…"
+              className="w-full card pl-10 pr-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-orange-300 border border-gray-100"
+            />
+          </div>
+
+          <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
+            {[
+              ['all', 'Tous'],
+              ['verb', 'Verben'],
+              ['adj', 'Adjektive'],
+              ['nom', 'Nomen'],
+            ].map(([k, l]) => (
+              <button
+                key={k}
+                onClick={() => setFilter(k)}
+                className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-colors ${
+                  filter === k ? 'gradient-bg text-white shadow' : 'card text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                {l}
+              </button>
+            ))}
+          </div>
+
+          {filtered.length === 0 ? (
+            <div className="text-center py-16 card p-6">
+              <p className="text-5xl mb-3">📔</p>
+              <p className="text-gray-800 font-extrabold text-base">Aucun mot dans le bloc-notes</p>
+              <p className="text-gray-500 text-xs mt-1 max-w-xs mx-auto">
+                Allez dans l'onglet <strong>« ✨ Découvrir »</strong> et cliquez sur <strong>« ➕ Ajouter au bloc-notes »</strong> pour constituer votre liste !
+              </p>
+              <button
+                onClick={() => setView('discover')}
+                className="gradient-bg text-white font-extrabold text-xs px-5 py-2.5 rounded-full mt-4 shadow"
+              >
+                Découvrir les 30 mots du jour →
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {filtered.map(w => (
+                <div key={w.id} className="card p-3.5 border border-gray-100">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+                        <span className={`tag ${catCls(w.cat)}`}>{w.cat}</span>
+                        {w.plural && <span className="text-xs text-gray-400">Pl: {w.plural}</span>}
+                        {w.lastReviewed === today && (
+                          <span className="tag bg-green-50 text-green-700 border border-green-200">✓ Révisé aujourd'hui</span>
+                        )}
+                        {(w.reviewCount || 0) > 0 && (
+                          <span className="text-[11px] text-gray-400">Revu {w.reviewCount}x</span>
+                        )}
+                      </div>
+                      <p className="font-extrabold text-gray-900 text-base">{w.de}</p>
+                      <p className="text-sm text-gray-600 font-medium">{w.fr}</p>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={() => markReviewed(w.id)}
+                        className={`text-xs font-bold px-2.5 py-1.5 rounded-lg flex items-center gap-1 transition-colors ${
+                          w.lastReviewed === today
+                            ? 'bg-green-50 text-green-700'
+                            : 'bg-gray-100 hover:bg-green-100 text-gray-700 hover:text-green-800'
+                        }`}
+                        title="Marquer comme révisé aujourd'hui"
+                      >
+                        ✓
+                      </button>
+                      <button
+                        onClick={() => deleteWord(w.id)}
+                        className="text-xs bg-red-50 hover:bg-red-100 text-red-500 font-bold px-2.5 py-1.5 rounded-lg transition-colors"
+                        title="Retirer du bloc-notes"
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
+
+                  {w.example && (
+                    <div className="mt-2 pt-2 border-t border-gray-100 text-xs text-gray-700 italic">
+                      « {w.example} »
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── 3. RÉVISION DU JOUR ── */}
+      {view === 'review' && (
+        <div className="p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h2 className="text-base font-extrabold text-gray-900">🔔 Révision quotidienne</h2>
+              <p className="text-xs text-gray-500">Mots de votre bloc-notes à réviser aujourd'hui</p>
+            </div>
+            <span className="tag bg-orange-100 text-orange-700 font-bold">{dailySugg.length} restants</span>
+          </div>
+
+          {dailySugg.length === 0 ? (
+            <div className="text-center py-16 card p-6">
+              <p className="text-5xl mb-2">🎉</p>
+              <p className="text-gray-900 font-extrabold text-base">Toutes vos révisions sont faites !</p>
+              <p className="text-gray-500 text-xs mt-1">Revenez demain ou ajoutez de nouveaux mots pour continuer.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {dailySugg.map(w => (
+                <div key={w.id} className="card p-4 border border-gray-100 flex items-start gap-3 shadow-sm">
+                  <div className="flex-1 min-w-0">
+                    <span className={`tag ${catCls(w.cat)} mb-1`}>{w.cat}</span>
+                    <p className="font-extrabold text-gray-900 text-xl mt-1">{w.de}</p>
+                    <p className="text-gray-700 font-medium text-sm mt-0.5">{w.fr}</p>
+                    {w.plural && <p className="text-xs text-gray-400 mt-0.5">Pluriel: {w.plural}</p>}
+                    {w.example && <p className="text-xs text-gray-500 mt-2 italic bg-gray-50 p-2 rounded-lg">« {w.example} »</p>}
+                  </div>
+                  <button
+                    onClick={() => markReviewed(w.id)}
+                    className="w-12 h-12 rounded-full gradient-bg text-white font-extrabold text-xl flex items-center justify-center hover:opacity-90 shadow shrink-0"
+                    title="Je connais ce mot"
+                  >
+                    ✓
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── 4. AJOUT MANUEL ── */}
+      {view === 'add' && (
+        <div className="p-4">
+          <h2 className="text-base font-extrabold text-gray-900 mb-3">✍️ Ajouter un mot manuellement</h2>
+          <div className="card p-4 space-y-3 border border-gray-100">
+            <div>
+              <label className="text-xs font-bold text-gray-700 block mb-1">Mot ou expression en allemand *</label>
+              <input
+                value={form.de}
+                onChange={e => setForm(p => ({ ...p, de: e.target.value }))}
+                placeholder="z.B. der Termin / teilnehmen"
+                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-orange-400"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-gray-700 block mb-1">Traduction en français *</label>
+              <input
+                value={form.fr}
+                onChange={e => setForm(p => ({ ...p, fr: e.target.value }))}
+                placeholder="ex: le rendez-vous / participer"
+                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-orange-400"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-gray-700 block mb-1">Catégorie</label>
+              <select
+                value={form.cat}
+                onChange={e => setForm(p => ({ ...p, cat: e.target.value }))}
+                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm outline-none"
+              >
+                {['Verb', 'Adjektiv', 'Nomen', 'Expression'].map(c => <option key={c}>{c}</option>)}
+              </select>
+            </div>
+            {form.cat === 'Nomen' && (
+              <div>
+                <label className="text-xs font-bold text-gray-700 block mb-1">Forme du pluriel (optionnel)</label>
+                <input
+                  value={form.plural}
+                  onChange={e => setForm(p => ({ ...p, plural: e.target.value }))}
+                  placeholder="die Termine"
+                  className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-orange-400"
+                />
+              </div>
+            )}
+            <div>
+              <label className="text-xs font-bold text-gray-700 block mb-1">Phrase d'exemple (optionnel)</label>
+              <textarea
+                value={form.example}
+                onChange={e => setForm(p => ({ ...p, example: e.target.value }))}
+                placeholder="Ich habe morgen einen Termin beim Arzt."
+                rows={2}
+                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-orange-400 resize-none"
+              />
+            </div>
+            <button
+              onClick={addManualWord}
+              disabled={!form.de.trim() || !form.fr.trim()}
+              className="gradient-bg w-full text-white font-extrabold py-3 rounded-xl text-sm disabled:opacity-50 shadow-md"
+            >
+              ➕ Ajouter directement au bloc-notes
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   EXAM TOPICS TAB
+═══════════════════════════════════════════ */
+function TopicsTab({ apiKey, onVocabExtracted }) {
+  const [topics, setTopics] = useState(() => db.get(K.TOPICS, []));
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm]   = useState({ title:'', text:'', type:'Lesen' });
+  const [analyzing, setAnalyzing] = useState(null);
+  const [practicing, setPracticing] = useState(null);
+  const [expanded, setExpanded] = useState({});
+
+  const saveTopics = t => { setTopics(t); db.set(K.TOPICS, t); };
+
+  const addTopic = () => {
+    if (!form.title.trim() || !form.text.trim()) return;
+    saveTopics([...topics, { id: uid(), ...form, addedAt: Date.now(), analyzed: false }]);
+    setForm({ title:'', text:'', type:'Lesen' });
+    setShowForm(false);
+  };
+
+  const analyze = async topic => {
+    if (!apiKey) { alert('Configurez votre clé API d\'abord.'); return; }
+    setAnalyzing(topic.id);
+    try {
+      const prompt = `Analyse ce texte ou sujet d'examen allemand B1 et retourne un objet JSON:
+{
+  "vocab": [{"de":"...","fr":"...","cat":"Verb|Adjektiv|Nomen","example":"..."}],
+  "grammar": ["point de grammaire 1","point 2"],
+  "keyPhrases": ["expression utile 1","expression 2"],
+  "questions": ["Question de compréhension 1?","Question 2?","Question 3?"],
+  "summary": "résumé du thème en 1 phrase en français"
+}
+Texte/Sujet: """${topic.text}"""
+Extrais 8 à 12 mots de vocabulaire clés. Réponds UNIQUEMENT en JSON valide.`;
+
+      const result = await gemini(apiKey, 'Tu es un expert certifié en didactique de l\'allemand et préparation Goethe B1.', [], prompt, { json: true });
+      const updated = topics.map(t => t.id===topic.id ? { ...t, analyzed:true, ...result } : t);
+      saveTopics(updated);
+      if (result.vocab?.length) {
+        onVocabExtracted(result.vocab.map(w => ({ ...w, id:uid(), addedAt:Date.now(), reviewCount:0, source:'exam', lastReviewed:null })));
+      }
+    } catch(e) { alert('Erreur analyse : ' + e.message); }
+    finally { setAnalyzing(null); }
+  };
+
+  const deleteTopic = id => saveTopics(topics.filter(t => t.id !== id));
+
+  // Practicing on a topic = special chat
+  if (practicing) {
+    const part = {
+      id: 99, emoji: '📝', grad: 'from-indigo-400 to-purple-500',
+      title: practicing.title, sub: practicing.type,
+      greeting: practicing.questions?.[0]
+        ? `Guten Tag! Wir üben heute zum Thema „${practicing.title}". Meine erste Frage: ${practicing.questions[0]}`
+        : `Guten Tag! Wir üben heute zum Thema „${practicing.title}". Was kannst du mir dazu sagen?`,
+      system: `Du bist Anna, eine B1-Prüfungspartnerin.
+Thema der Übung: "${practicing.title}" (${practicing.type}).
+Inhalt: "${practicing.text.slice(0,600)}"
+${practicing.keyPhrases?.length ? `Wichtige Ausdrücke: ${practicing.keyPhrases.join(', ')}` : ''}
+
+Stelle Fragen zu diesem Thema, bitte um Meinungen und Reaktionen.
+Sei aufmunternd. Verwende B1-Deutsch.
+
+ANTWORTFORMAT:
+[PARTNER]
+Deine Reaktion / Folgefrage auf Deutsch…
+[/PARTNER]
+[FEEDBACK]
+{"grammar":"...","suggestion":"...","score":7,"strengths":["..."],"improvements":["..."]}
+[/FEEDBACK]`,
+    };
+    return (
+      <ChatInterface
+        part={part} apiKey={apiKey}
+        onBack={() => setPracticing(null)}
+        onSessionEnd={s => { const sessions = db.get(K.SESSIONS,[]); db.set(K.SESSIONS,[...sessions,s]); setPracticing(null); }}
+      />
+    );
+  }
+
+  return (
+    <div className="pb-28 fade-in">
+      <div className="bg-white border-b sticky top-0 z-10 px-4 py-3 flex items-center justify-between">
+        <div>
+          <h1 className="text-base font-extrabold text-gray-900">📝 Sujets d'examen</h1>
+          <p className="text-xs text-gray-500">L'IA analyse vos textes · extrait vocabulaire + exercices</p>
+        </div>
+        <button onClick={()=>setShowForm(v=>!v)} className={`px-4 py-2 rounded-xl text-sm font-bold ${showForm?'bg-gray-100 text-gray-700':'gradient-bg text-white shadow'}`}>
+          {showForm ? '← Retour' : '+ Ajouter'}
+        </button>
+      </div>
+
+      {showForm ? (
+        <div className="p-4">
+          <div className="card p-4 space-y-3">
+            <div>
+              <label className="text-xs font-semibold text-gray-500 block mb-1">Titre *</label>
+              <input value={form.title} onChange={e=>setForm(p=>({...p,title:e.target.value}))} placeholder="ex: Texte sur l'environnement" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-orange-400" />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-gray-500 block mb-1">Type de compétence</label>
+              <select value={form.type} onChange={e=>setForm(p=>({...p,type:e.target.value}))} className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm outline-none">
+                {['Lesen','Hören','Sprechen','Schreiben'].map(t=><option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-gray-500 block mb-1">Texte / Notes / Sujet *</label>
+              <textarea value={form.text} onChange={e=>setForm(p=>({...p,text:e.target.value}))}
+                placeholder="Collez ici votre texte d'examen, un résumé de cours, ou les thèmes à maîtriser…&#10;&#10;Ex: Thema Umwelt — Recycling, Klimawandel, erneuerbare Energien..."
+                rows={8} className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-orange-400 resize-none" />
+            </div>
+            <button onClick={addTopic} disabled={!form.title.trim()||!form.text.trim()} className="gradient-bg w-full text-white font-bold py-3 rounded-xl text-sm disabled:opacity-50">
+              💾 Sauvegarder
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="p-4">
+          {topics.length===0
+            ? <div className="text-center py-16">
+                <p className="text-5xl mb-3">📄</p>
+                <p className="text-gray-700 font-bold">Aucun sujet ajouté</p>
+                <p className="text-gray-400 text-sm mt-1 max-w-xs mx-auto">Collez vos textes d'examen pour que l'IA les analyse et génère des exercices.</p>
+              </div>
+            : <div className="space-y-3">
+                {topics.map(t => (
+                  <div key={t.id} className="card p-4">
+                    <div className="flex items-start gap-3 mb-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <span className="tag bg-indigo-100 text-indigo-700">{t.type}</span>
+                          {t.analyzed && <span className="tag bg-green-100 text-green-700">✓ Analysé</span>}
+                        </div>
+                        <p className="font-bold text-gray-900">{t.title}</p>
+                        <p className="text-xs text-gray-400 mt-0.5 line-clamp-2">{t.text.slice(0,100)}…</p>
+                      </div>
+                      <button onClick={()=>deleteTopic(t.id)} className="text-gray-300 hover:text-red-400 text-xl leading-none shrink-0">×</button>
+                    </div>
+
+                    {t.analyzed && (
+                      <div className="space-y-2 mb-3">
+                        {t.summary && <p className="text-xs font-medium text-gray-600 bg-gray-50 rounded-lg p-2">📌 {t.summary}</p>}
+                        {t.grammar?.length>0 && (
+                          <details className="bg-blue-50 rounded-lg">
+                            <summary className="text-xs font-bold text-blue-700 px-3 py-2 cursor-pointer">📐 Grammaire ({t.grammar.length} points)</summary>
+                            <div className="px-3 pb-2 space-y-0.5">{t.grammar.map((g,i)=><p key={i} className="text-xs text-blue-600">• {g}</p>)}</div>
+                          </details>
+                        )}
+                        {t.keyPhrases?.length>0 && (
+                          <details className="bg-orange-50 rounded-lg">
+                            <summary className="text-xs font-bold text-orange-700 px-3 py-2 cursor-pointer">💬 Expressions clés ({t.keyPhrases.length})</summary>
+                            <div className="px-3 pb-2 flex flex-wrap gap-1">{t.keyPhrases.map((p,i)=><span key={i} className="tag bg-orange-100 text-orange-700">{p}</span>)}</div>
+                          </details>
+                        )}
+                        {t.questions?.length>0 && (
+                          <details className="bg-purple-50 rounded-lg">
+                            <summary className="text-xs font-bold text-purple-700 px-3 py-2 cursor-pointer">❓ Questions ({t.questions.length})</summary>
+                            <div className="px-3 pb-2 space-y-0.5">{t.questions.map((q,i)=><p key={i} className="text-xs text-purple-600">• {q}</p>)}</div>
+                          </details>
+                        )}
+                        {t.vocab?.length>0 && (
+                          <details className="bg-emerald-50 rounded-lg border border-emerald-200">
+                            <summary className="text-xs font-bold text-emerald-800 px-3 py-2 cursor-pointer flex items-center justify-between">
+                              <span>📔 Vocabulaire clé extrait ({t.vocab.length} mots)</span>
+                              <span className="text-[10px] font-normal text-emerald-600">Ouvrir ▾</span>
+                            </summary>
+                            <div className="px-3 pb-2.5 pt-1 space-y-2">
+                              {t.vocab.map((v, idx) => {
+                                const currentNotebook = db.get(K.NOTEBOOK, []);
+                                const isSaved = currentNotebook.some(w => (w.de || '').toLowerCase() === (v.de || '').toLowerCase());
+                                return (
+                                  <div key={idx} className="bg-white p-2.5 rounded-xl border border-emerald-100 flex items-center justify-between gap-2 shadow-xs">
+                                    <div className="flex-1 min-w-0">
+                                      <p className="font-bold text-xs text-gray-900">{v.de}</p>
+                                      <p className="text-[11px] text-gray-600 truncate">{v.fr}</p>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const nb = db.get(K.NOTEBOOK, []);
+                                        if (!nb.some(w => (w.de || '').toLowerCase() === (v.de || '').toLowerCase())) {
+                                          db.set(K.NOTEBOOK, [{ ...v, id: uid(), addedAt: Date.now(), reviewCount: 0, source: 'exam' }, ...nb]);
+                                          saveTopics([...topics]);
+                                        }
+                                      }}
+                                      className={`text-[11px] font-extrabold px-2.5 py-1.5 rounded-lg shrink-0 transition-colors ${
+                                        isSaved ? 'bg-green-100 text-green-700' : 'gradient-bg text-white shadow-xs'
+                                      }`}
+                                    >
+                                      {isSaved ? '✓ Au bloc-notes' : '➕ Ajouter'}
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </details>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="flex gap-2">
+                      {!t.analyzed && (
+                        <button onClick={()=>analyze(t)} disabled={analyzing===t.id} className="flex-1 gradient-bg text-white text-xs font-bold py-2.5 rounded-xl disabled:opacity-60">
+                          {analyzing===t.id ? '⏳ Analyse…' : '🤖 Analyser avec l\'IA'}
+                        </button>
+                      )}
+                      <button onClick={()=>setPracticing(t)} className="flex-1 bg-indigo-100 text-indigo-700 text-xs font-bold py-2.5 rounded-xl hover:bg-indigo-200 transition-colors">
+                        🎙️ S'entraîner
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+          }
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   PROFILE TAB
+═══════════════════════════════════════════ */
+function ProfileTab({ apiKey, onResetKey }) {
+  const sessions  = db.get(K.SESSIONS, []);
+  const notebook  = db.get(K.NOTEBOOK, []);
+  const topics    = db.get(K.TOPICS, []);
+  const today     = new Date().toDateString();
+  const fileInputRef = useRef(null);
+
+  const exportData = () => {
+    const backup = {
+      version: 1,
+      date: new Date().toISOString(),
+      apiKey: db.get(K.API, ''),
+      notebook: db.get(K.NOTEBOOK, []),
+      sessions: db.get(K.SESSIONS, []),
+      topics: db.get(K.TOPICS, []),
+    };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `deutsch_b1_sauvegarde_${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importData = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = JSON.parse(event.target.result);
+        if (data.notebook && Array.isArray(data.notebook)) {
+          db.set(K.NOTEBOOK, data.notebook);
+          if (data.sessions && Array.isArray(data.sessions)) db.set(K.SESSIONS, data.sessions);
+          if (data.topics && Array.isArray(data.topics)) db.set(K.TOPICS, data.topics);
+          if (data.apiKey && typeof data.apiKey === 'string' && !db.get(K.API, '')) {
+            db.set(K.API, data.apiKey);
+          }
+          alert(`✅ Importation réussie ! ${data.notebook.length} mots et ${data.sessions?.length || 0} sessions restaurés.`);
+          window.location.reload();
+        } else {
+          alert('❌ Fichier invalide : format de sauvegarde non reconnu.');
+        }
+      } catch (err) {
+        alert('❌ Erreur de lecture du fichier : ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const totalSessions = sessions.length;
+  const avgScore = totalSessions ? sessions.reduce((a,b)=>a+b.score,0)/totalSessions : 0;
+  const totalWords    = notebook.length;
+  const reviewedToday = notebook.filter(w=>w.lastReviewed===today).length;
+
+  /* Streak */
+  const streak = useMemo(() => {
+    const dates = new Set([
+      ...sessions.map(s=>new Date(s.date).toDateString()),
+      ...notebook.filter(w=>w.lastReviewed).map(w=>w.lastReviewed),
+    ]);
+    let c=0, d=new Date();
+    while(dates.has(d.toDateString())) { c++; d.setDate(d.getDate()-1); }
+    return c;
+  }, [sessions, notebook]);
+
+  /* Readiness score */
+  const readiness = useMemo(() => {
+    const sc = Math.min((avgScore/10)*35, 35);
+    const vc = Math.min((totalWords/250)*30, 30);
+    const ec = Math.min((totalSessions/15)*25, 25);
+    const tc = Math.min((topics.filter(t=>t.analyzed).length/5)*10, 10);
+    return Math.round(sc+vc+ec+tc);
+  }, [avgScore, totalWords, totalSessions, topics]);
+
+  const rGrad  = readiness>=70?'from-green-400 to-teal-500':readiness>=40?'from-yellow-400 to-orange-500':'from-red-400 to-pink-500';
+  const rLabel = readiness>=70?'✅ Bien préparé(e)':readiness>=40?'📈 En bonne progression':'🔴 Travail nécessaire';
+
+  /* Weaknesses analysis */
+  const insights = [];
+  if (totalSessions === 0) insights.push({ type:'warn', msg:'Aucune session orale — lancez votre premier Sprechen !' });
+  else if (avgScore < 6) insights.push({ type:'warn', msg:`Score moyen ${avgScore.toFixed(1)}/10 — continuez à pratiquer l'oral.` });
+  else if (avgScore >= 8) insights.push({ type:'ok', msg:`Excellent score moyen (${avgScore.toFixed(1)}/10) — gardez ce rythme !` });
+
+  const partScores = PARTS.map(p => {
+    const ps = sessions.filter(s=>s.partId===p.id);
+    return { ...p, n: ps.length, avg: ps.length ? ps.reduce((a,b)=>a+b.score,0)/ps.length : null };
+  });
+  partScores.forEach(p => {
+    if (!p.n) insights.push({ type:'warn', msg:`Teil ${p.id} (${p.title}) jamais pratiqué.` });
+    else if (p.avg < 5) insights.push({ type:'warn', msg:`Teil ${p.id} faible (${p.avg.toFixed(1)}/10) — à renforcer.` });
+  });
+
+  if (totalWords < 100) insights.push({ type:'warn', msg:`Seulement ${totalWords} mots — visez 200+ pour B1.` });
+  if (streak >= 5) insights.push({ type:'ok', msg:`🔥 ${streak} jours de suite — incroyable régularité !` });
+  if (streak === 0) insights.push({ type:'warn', msg:'Aucune activité aujourd\'hui — même 10 minutes aide !' });
+
+  return (
+    <div className="p-4 pb-28 fade-in">
+      {/* Card */}
+      <div className="card p-5 mb-4 text-center relative overflow-hidden">
+        <div className="absolute inset-0 gradient-bg opacity-5" />
+        <div className="relative">
+          <div className="w-20 h-20 rounded-full gradient-bg flex items-center justify-center text-4xl mx-auto mb-3 shadow-lg">👤</div>
+          <h2 className="text-xl font-extrabold text-gray-900">Rony</h2>
+          <div className="flex justify-center gap-2 mt-2">
+            <span className="tag bg-orange-100 text-orange-700 text-sm">A2 → B1</span>
+            <span className="tag bg-gray-100 text-gray-600 text-sm">📅 24 Nov 2026</span>
+          </div>
+          {apiKey && (
+            <button onClick={onResetKey} className="mt-3 text-xs text-gray-400 underline hover:text-gray-600">
+              Changer de clé API
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Readiness */}
+      <div className="card p-4 mb-4">
+        <h3 className="font-bold text-gray-800 mb-3">🎯 Préparation globale</h3>
+        <div className="flex items-center gap-4 mb-3">
+          <div className={`w-20 h-20 rounded-full bg-gradient-to-br ${rGrad} flex items-center justify-center text-white font-extrabold text-2xl shrink-0 shadow-lg`}>
+            {readiness}%
+          </div>
+          <div>
+            <p className="font-bold text-gray-800">{rLabel}</p>
+            <p className="text-xs text-gray-400 mt-0.5">Sessions · Scores · Vocabulaire · Sujets</p>
+          </div>
+        </div>
+        <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+          <div className={`h-full bg-gradient-to-r ${rGrad} rounded-full transition-all duration-700`} style={{ width:`${readiness}%` }} />
+        </div>
+
+        {insights.length>0 && (
+          <div className="mt-3 space-y-1.5">
+            {insights.map((ins,i) => (
+              <div key={i} className={`flex items-start gap-2 text-xs p-2 rounded-lg ${ins.type==='ok'?'bg-green-50 text-green-700':'bg-red-50 text-red-600'}`}>
+                <span>{ins.type==='ok'?'✅':'⚠️'}</span>
+                <span>{ins.msg}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 gap-3 mb-4">
+        {[
+          { l:'Série', v:`${streak}j`, i:'🔥', g:'from-orange-400 to-red-400' },
+          { l:'Mots appris', v:totalWords, i:'📖', g:'from-blue-400 to-indigo-400' },
+          { l:'Sessions orales', v:totalSessions, i:'🎙️', g:'from-green-400 to-teal-400' },
+          { l:'Score moyen', v:totalSessions?`${avgScore.toFixed(1)}/10`:'—', i:'⭐', g:'from-yellow-400 to-orange-400' },
+        ].map((s,i) => (
+          <div key={i} className="card p-4">
+            <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${s.g} flex items-center justify-center text-xl mb-2`}>{s.i}</div>
+            <p className="text-xl font-extrabold text-gray-900">{s.v}</p>
+            <p className="text-xs text-gray-500">{s.l}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Per-Teil */}
+      <div className="card p-4 mb-4">
+        <h3 className="font-bold text-gray-800 mb-3">🎙️ Progression par partie</h3>
+        <div className="space-y-3">
+          {partScores.map(p => (
+            <div key={p.id}>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="font-medium text-gray-700">{p.emoji} Teil {p.id} — {p.title}</span>
+                <span className="font-bold">{p.avg ? `${p.avg.toFixed(1)}/10 · ${p.n} session${p.n>1?'s':''}` : <span className="text-gray-300">Non commencé</span>}</span>
+              </div>
+              <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                <div className={`h-full bg-gradient-to-r ${p.grad} rounded-full transition-all`} style={{ width:`${p.avg?(p.avg/10)*100:0}%` }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Vocab breakdown */}
+      <div className="card p-4 mb-4">
+        <h3 className="font-bold text-gray-800 mb-3">📚 Vocabulaire</h3>
+        <div className="grid grid-cols-3 gap-2 text-center">
+          {[
+            { l:'Total', v:totalWords, c:'text-blue-600' },
+            { l:'Révisés auj.', v:reviewedToday, c:'text-green-600' },
+            { l:'Sujets analysés', v:topics.filter(t=>t.analyzed).length, c:'text-indigo-600' },
+          ].map((s,i) => (
+            <div key={i} className="bg-gray-50 rounded-xl py-3">
+              <p className={`text-2xl font-extrabold ${s.c}`}>{s.v}</p>
+              <p className="text-xs text-gray-400">{s.l}</p>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3">
+          <div className="flex justify-between text-xs mb-1 text-gray-500">
+            <span>Progression vers 300 mots B1</span>
+            <span className="font-bold">{Math.min(100, Math.round((totalWords/300)*100))}%</span>
+          </div>
+          <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+            <div className="h-full bg-gradient-to-r from-blue-400 to-indigo-500 rounded-full" style={{ width:`${Math.min(100,(totalWords/300)*100)}%` }} />
+          </div>
+        </div>
+      </div>
+
+      {/* Session history */}
+      {sessions.length>0 && (
+        <div className="card p-4">
+          <h3 className="font-bold text-gray-800 mb-3">📋 Historique complet</h3>
+          <div className="space-y-2 max-h-64 overflow-y-auto">
+            {[...sessions].reverse().map((s,i) => (
+              <div key={i} className="flex items-center gap-3 py-2 border-b border-gray-50 last:border-0">
+                <span className="text-xl">{s.partId===99?'📝':['🗣️','📋','❓'][s.partId-1]||'🎙️'}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-800 truncate">{s.partTitle}</p>
+                  <p className="text-xs text-gray-400">{new Date(s.date).toLocaleDateString('fr-FR',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})} · {s.exchanges} échanges</p>
+                </div>
+                <span className={`font-bold text-sm shrink-0 ${s.score>=7?'text-green-600':s.score>=5?'text-orange-500':'text-red-500'}`}>{s.score.toFixed(1)}/10</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Synchronisation & Sauvegarde (PC <-> Téléphone) */}
+      <div className="card p-4 mt-4">
+        <h3 className="font-bold text-gray-800 mb-1 flex items-center gap-1.5">
+          <span>🔄</span> Synchronisation (PC ↔ Téléphone)
+        </h3>
+        <p className="text-xs text-gray-500 mb-3 leading-relaxed">
+          Transférez tous vos mots sauvegardés, votre clé et vos scores vers votre téléphone en un seul clic !
+        </p>
+
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={exportData}
+            className="flex-1 gradient-bg text-white font-extrabold text-xs py-2.5 rounded-xl shadow-xs flex items-center justify-center gap-1.5 hover:opacity-95 transition-all"
+            title="Télécharger une sauvegarde avec tous vos mots"
+          >
+            <span>📤</span> Exporter mes données
+          </button>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json"
+            onChange={importData}
+            className="hidden"
+          />
+
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="flex-1 bg-white border border-gray-200 text-gray-800 font-extrabold text-xs py-2.5 rounded-xl hover:bg-gray-50 transition-colors flex items-center justify-center gap-1.5 shadow-xs"
+            title="Importer vos mots sur ce téléphone ou PC"
+          >
+            <span>📥</span> Importer mes données
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   BOTTOM NAV
+═══════════════════════════════════════════ */
+function BottomNav({ tab, setTab }) {
+  const items = [
+    { k:'home',    l:'Accueil',    e:'🏠' },
+    { k:'vocab',   l:'Vocabulaire',e:'📚' },
+    { k:'topics',  l:'Examens',    e:'📝' },
+    { k:'profile', l:'Profil',     e:'👤' },
+  ];
+  return (
+    <nav className="fixed bottom-0 left-0 right-0 bg-white border-t flex justify-around items-center h-16 z-40 bottom-safe" style={{ boxShadow:'0 -2px 16px rgba(0,0,0,.06)' }}>
+      {items.map(it => (
+        <button key={it.k} onClick={()=>setTab(it.k)}
+          className={`flex flex-col items-center gap-0.5 px-4 py-1 transition-colors ${tab===it.k?'text-orange-500':'text-gray-400'}`}>
+          <span className="text-2xl">{it.e}</span>
+          <span className={`text-xs font-semibold ${tab===it.k?'text-orange-500':'text-gray-400'}`}>{it.l}</span>
+          {tab===it.k && <div className="w-5 h-0.5 rounded-full gradient-bg" />}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   APP ROOT
+═══════════════════════════════════════════ */
+function App() {
+  const [apiKey, setApiKey] = useState(() => db.get(K.API, null));
+  const [tab, setTab]       = useState('home');
+
+  const handleSaveKey = key => { db.set(K.API, key); setApiKey(key); };
+  const handleResetKey = () => { if(confirm('Changer de clé API ?')) { db.set(K.API,null); setApiKey(null); } };
+
+  const handleSessionEnd = session => {
+    const sessions = db.get(K.SESSIONS, []);
+    db.set(K.SESSIONS, [...sessions, session]);
+  };
+
+  const handleVocabExtracted = words => {
+    const notebook = db.get(K.NOTEBOOK, []);
+    const exist = new Set(notebook.map(w=>(w.de||'').toLowerCase()));
+    const fresh = words.filter(w => !exist.has((w.de||'').toLowerCase()));
+    if (fresh.length) db.set(K.NOTEBOOK, [...notebook, ...fresh]);
+  };
+
+  return (
+    <div className="max-w-lg mx-auto min-h-screen bg-gray-50 relative">
+      {!apiKey && <SetupModal onSave={handleSaveKey} />}
+
+      <div className="min-h-screen" style={{ paddingBottom:'64px' }}>
+        {tab==='home'    && <Dashboard apiKey={apiKey} onSessionEnd={handleSessionEnd} />}
+        {tab==='vocab'   && <VocabTab  apiKey={apiKey} />}
+        {tab==='topics'  && <TopicsTab apiKey={apiKey} onVocabExtracted={handleVocabExtracted} />}
+        {tab==='profile' && <ProfileTab apiKey={apiKey} onResetKey={handleResetKey} />}
+      </div>
+
+      <BottomNav tab={tab} setTab={setTab} />
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
