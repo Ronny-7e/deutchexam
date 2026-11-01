@@ -2,7 +2,8 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <meta name="permissions-policy" content="microphone=*, camera=*" />
   <title>Deutsch B1 — Entraînement</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -184,24 +185,100 @@ function useVoiceRecorder() {
   const [audioBlob, setAudioBlob]     = useState(null);
   const [audioUrl, setAudioUrl]       = useState(null);
   const [transcript, setTranscript]   = useState('');
+  const [micError, setMicError]       = useState(null);
   
   const mediaRecorderRef = useRef(null);
   const chunksRef        = useRef([]);
   const timerRef         = useRef(null);
   const speechRef        = useRef(null);
 
-  const start = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      chunksRef.current = [];
+  /* Detect the best supported MIME type for this device */
+  const getBestMimeType = useCallback(() => {
+    if (!window.MediaRecorder) return '';
+    const candidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4',
+      'audio/ogg;codecs=opus',
+      'audio/ogg',
+      'audio/wav',
+      '',
+    ];
+    for (const mime of candidates) {
+      if (!mime) return '';
+      try {
+        if (MediaRecorder.isTypeSupported(mime)) return mime;
+      } catch { /* ignore */ }
+    }
+    return '';
+  }, []);
 
-      let mimeType = 'audio/webm';
-      if (!window.MediaRecorder || !MediaRecorder.isTypeSupported('audio/webm')) {
-        if (window.MediaRecorder && MediaRecorder.isTypeSupported('audio/mp4')) mimeType = 'audio/mp4';
-        else mimeType = '';
+  /* Request microphone permission explicitly (needed on mobile HTTPS) */
+  const requestMicPermission = useCallback(async () => {
+    /* 1. Check Permissions API if available */
+    if (navigator.permissions && navigator.permissions.query) {
+      try {
+        const status = await navigator.permissions.query({ name: 'microphone' });
+        if (status.state === 'denied') {
+          throw new Error('DENIED');
+        }
+      } catch (e) {
+        if (e.message === 'DENIED') throw e;
+        /* Permissions API not supported for microphone on this browser — continue */
+      }
+    }
+    /* 2. Check that mediaDevices is available (HTTPS required) */
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error('NO_MEDIA_DEVICES');
+    }
+    /* 3. Actually request */
+    return navigator.mediaDevices.getUserMedia({ audio: true });
+  }, []);
+
+  const start = useCallback(async () => {
+    setMicError(null);
+    try {
+      let stream;
+      try {
+        stream = await requestMicPermission();
+      } catch (permErr) {
+        if (permErr.message === 'DENIED') {
+          setMicError('denied');
+          alert("⚠️ L'accès au microphone est bloqué.\n\nAllez dans les Paramètres de votre navigateur → Autorisations du site → Microphone → Autoriser ce site.\n\nSur iPhone : Réglages → Safari → Microphone → Autoriser.");
+          return;
+        }
+        if (permErr.message === 'NO_MEDIA_DEVICES') {
+          setMicError('https');
+          alert("⚠️ Le microphone n'est pas disponible.\n\nCette fonctionnalité nécessite une connexion HTTPS sécurisée.\nVérifiez que vous utilisez bien https:// dans l'URL (pas http://).\n\nSur GitHub Pages, l'URL doit commencer par https://");
+          return;
+        }
+        /* Other error (NotAllowedError, NotFoundError, etc.) */
+        const msg = permErr.name === 'NotAllowedError'
+          ? "Vous avez refusé l'accès au micro. Rafraîchissez la page et acceptez la demande d'autorisation."
+          : permErr.name === 'NotFoundError'
+          ? "Aucun microphone détecté sur cet appareil."
+          : permErr.name === 'NotReadableError'
+          ? "Le micro est utilisé par une autre application. Fermez les autres apps et réessayez."
+          : "Erreur d'accès au micro : " + (permErr.message || permErr.name);
+        setMicError('error');
+        alert("⚠️ " + msg);
+        return;
       }
 
-      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      chunksRef.current = [];
+
+      const mimeType = getBestMimeType();
+
+      let recorder;
+      try {
+        recorder = mimeType
+          ? new MediaRecorder(stream, { mimeType })
+          : new MediaRecorder(stream);
+      } catch (recErr) {
+        /* Safari sometimes fails with specific MIME types — fallback */
+        console.warn('MediaRecorder creation failed with mimeType:', mimeType, recErr);
+        recorder = new MediaRecorder(stream);
+      }
       mediaRecorderRef.current = recorder;
 
       recorder.ondataavailable = e => {
@@ -209,7 +286,7 @@ function useVoiceRecorder() {
       };
 
       recorder.onstop = () => {
-        const type = recorder.mimeType || 'audio/webm';
+        const type = recorder.mimeType || mimeType || 'audio/webm';
         const blob = new Blob(chunksRef.current, { type });
         const url  = URL.createObjectURL(blob);
         setAudioBlob(blob);
@@ -217,7 +294,15 @@ function useVoiceRecorder() {
         stream.getTracks().forEach(t => t.stop());
       };
 
-      recorder.start(100);
+      recorder.onerror = (e) => {
+        console.error('MediaRecorder error:', e);
+        stream.getTracks().forEach(t => t.stop());
+        setRecording(false);
+        if (timerRef.current) clearInterval(timerRef.current);
+      };
+
+      /* Use timeslice of 250ms for more frequent data chunks (better for mobile) */
+      recorder.start(250);
       setRecording(true);
       setRecordSecs(0);
       setAudioBlob(null);
@@ -240,16 +325,22 @@ function useVoiceRecorder() {
             const t = Array.from(e.results).map(r => r[0].transcript).join('');
             setTranscript(t);
           };
+          rec.onerror = e => {
+            console.warn('SpeechRecognition error:', e.error);
+            /* Don't block — speech recognition is optional */
+          };
           speechRef.current = rec;
           rec.start();
         } catch (e) {
-          console.warn('SpeechRecognition error:', e);
+          console.warn('SpeechRecognition init error:', e);
         }
       }
     } catch (err) {
+      console.error('Voice recorder start failed:', err);
+      setMicError('error');
       alert("Impossible d'accéder au microphone : " + err.message);
     }
-  }, []);
+  }, [requestMicPermission, getBestMimeType]);
 
   const stop = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -275,6 +366,7 @@ function useVoiceRecorder() {
     audioBlob,
     audioUrl,
     transcript,
+    micError,
     setTranscript,
     start,
     stop,
@@ -825,7 +917,38 @@ function ChatInterface({ part, apiKey, onBack, onSessionEnd }) {
 
         {/* CASE 3: Normal idle state (Mic button + text input) */}
         {!voice.recording && !voice.audioUrl && (
-          <div className="flex items-center gap-2">
+          <div>
+            {/* Mic error banner */}
+            {voice.micError && (
+              <div className={`mb-2 p-2.5 rounded-xl text-xs font-semibold flex items-start gap-2 fade-in ${
+                voice.micError === 'denied' ? 'bg-red-50 border border-red-200 text-red-700' :
+                voice.micError === 'https'  ? 'bg-yellow-50 border border-yellow-200 text-yellow-800' :
+                'bg-orange-50 border border-orange-200 text-orange-700'
+              }`}>
+                <span className="text-base shrink-0">{voice.micError === 'denied' ? '🚫' : voice.micError === 'https' ? '🔒' : '⚠️'}</span>
+                <div>
+                  {voice.micError === 'denied' && (
+                    <>
+                      <p className="font-bold">Microphone bloqué</p>
+                      <p className="font-normal mt-0.5">Allez dans les paramètres de votre navigateur → Autorisations → Microphone → Autoriser ce site. Puis rafraîchissez la page.</p>
+                    </>
+                  )}
+                  {voice.micError === 'https' && (
+                    <>
+                      <p className="font-bold">HTTPS requis pour le micro</p>
+                      <p className="font-normal mt-0.5">Le micro ne fonctionne que sur des sites sécurisés (https://). Vérifiez l'URL de la page.</p>
+                    </>
+                  )}
+                  {voice.micError === 'error' && (
+                    <>
+                      <p className="font-bold">Erreur microphone</p>
+                      <p className="font-normal mt-0.5">Vérifiez qu'un micro est connecté et qu'aucune autre app ne l'utilise. Puis réessayez.</p>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+            <div className="flex items-center gap-2">
             {/* Record Voice Button */}
             <button
               type="button"
@@ -876,6 +999,7 @@ function ChatInterface({ part, apiKey, onBack, onSessionEnd }) {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M5 12h14M12 5l7 7-7 7"/>
               </svg>
             </button>
+          </div>
           </div>
         )}
       </div>
@@ -1546,8 +1670,95 @@ function TopicsTab({ apiKey, onVocabExtracted }) {
   const [analyzing, setAnalyzing] = useState(null);
   const [practicing, setPracticing] = useState(null);
   const [expanded, setExpanded] = useState({});
+  const [uploadedFiles, setUploadedFiles] = useState([]);
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const fileUploadRef = useRef(null);
 
   const saveTopics = t => { setTopics(t); db.set(K.TOPICS, t); };
+
+  /* Handle file upload (images, PDFs, text files) from phone or computer */
+  const handleFileUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    
+    const newFiles = [];
+    for (const file of files) {
+      const type = file.type;
+      if (type.startsWith('image/')) {
+        /* Image: convert to base64 for preview + OCR via Gemini */
+        const b64 = await blobToBase64(file);
+        newFiles.push({ name: file.name, type: 'image', mimeType: type, base64: b64, preview: URL.createObjectURL(file) });
+      } else if (type === 'application/pdf') {
+        /* PDF: store reference for display */
+        newFiles.push({ name: file.name, type: 'pdf', mimeType: type, preview: null });
+        /* Can't directly read PDF text in browser, suggest taking screenshot */
+      } else if (type.startsWith('text/') || file.name.endsWith('.txt') || file.name.endsWith('.md')) {
+        /* Text file: read content directly */
+        const text = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsText(file);
+        });
+        setForm(prev => ({ ...prev, text: prev.text ? prev.text + '\n\n' + text : text, title: prev.title || file.name.replace(/\.[^.]+$/, '') }));
+      }
+    }
+    setUploadedFiles(prev => [...prev, ...newFiles]);
+    if (e.target) e.target.value = '';
+  };
+
+  /* Extract text from uploaded images using Gemini Vision */
+  const extractTextFromImages = async () => {
+    if (!apiKey) { alert("Configurez votre clé API d'abord."); return; }
+    const images = uploadedFiles.filter(f => f.type === 'image');
+    if (!images.length) return;
+    
+    setOcrBusy(true);
+    try {
+      for (const img of images) {
+        const contents = [{
+          role: 'user',
+          parts: [
+            { inlineData: { mimeType: img.mimeType, data: img.base64 } },
+            { text: "Extrais tout le texte visible dans cette image. S'il s'agit d'un sujet d'examen ou d'un texte en allemand, transcris-le fidèlement. Retourne uniquement le texte extrait, sans commentaire." }
+          ]
+        }];
+
+        let lastErr = null;
+        let extractedText = '';
+        for (const model of GEMINI_MODELS) {
+          try {
+            const res = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+              { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents }) }
+            );
+            const data = await res.json();
+            if (data.error) { lastErr = new Error(data.error.message); continue; }
+            extractedText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+            break;
+          } catch (e) { lastErr = e; }
+        }
+        
+        if (extractedText) {
+          setForm(prev => ({
+            ...prev,
+            text: prev.text ? prev.text + '\n\n--- Image: ' + img.name + ' ---\n' + extractedText : extractedText,
+            title: prev.title || img.name.replace(/\.[^.]+$/, ''),
+          }));
+        } else if (lastErr) {
+          alert("Erreur d'extraction du texte de " + img.name + ' : ' + lastErr.message);
+        }
+      }
+    } catch (e) {
+      alert("Erreur lors de l'extraction : " + e.message);
+    } finally {
+      setOcrBusy(false);
+    }
+  };
+
+  const removeFile = (idx) => {
+    setUploadedFiles(prev => prev.filter((_, i) => i !== idx));
+  };
 
   const addTopic = () => {
     if (!form.title.trim() || !form.text.trim()) return;
@@ -1641,10 +1852,92 @@ Deine Reaktion / Folgefrage auf Deutsch…
                 {['Lesen','Hören','Sprechen','Schreiben'].map(t=><option key={t}>{t}</option>)}
               </select>
             </div>
+
+            {/* FILE UPLOAD — Photos, PDF, Text files from phone or computer */}
+            <div>
+              <label className="text-xs font-semibold text-gray-500 block mb-1">📎 Importer un fichier (photo, PDF, texte)</label>
+              <p className="text-[11px] text-gray-400 mb-2">Prenez en photo un sujet d'examen ou importez un fichier depuis votre téléphone / ordinateur</p>
+              
+              <input
+                ref={fileUploadRef}
+                type="file"
+                accept="image/*,application/pdf,.txt,.md,.doc,.docx"
+                multiple
+                capture="environment"
+                onChange={handleFileUpload}
+                className="hidden"
+              />
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    /* On mobile: trigger camera directly */
+                    const input = document.createElement('input');
+                    input.type = 'file';
+                    input.accept = 'image/*';
+                    input.capture = 'environment';
+                    input.onchange = handleFileUpload;
+                    input.click();
+                  }}
+                  className="flex-1 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 font-bold text-xs py-2.5 rounded-xl flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <span>📷</span> Prendre une photo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => fileUploadRef.current?.click()}
+                  className="flex-1 bg-purple-50 hover:bg-purple-100 border border-purple-200 text-purple-700 font-bold text-xs py-2.5 rounded-xl flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <span>📁</span> Parcourir les fichiers
+                </button>
+              </div>
+
+              {/* Uploaded files preview */}
+              {uploadedFiles.length > 0 && (
+                <div className="mt-2 space-y-2">
+                  {uploadedFiles.map((f, idx) => (
+                    <div key={idx} className="bg-gray-50 rounded-xl p-2 flex items-center gap-2 border border-gray-100">
+                      {f.type === 'image' && f.preview && (
+                        <img src={f.preview} alt={f.name} className="w-12 h-12 rounded-lg object-cover shrink-0" />
+                      )}
+                      {f.type === 'pdf' && (
+                        <div className="w-12 h-12 rounded-lg bg-red-100 flex items-center justify-center text-red-600 text-lg shrink-0">📄</div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-bold text-gray-800 truncate">{f.name}</p>
+                        <p className="text-[11px] text-gray-400">{f.type === 'image' ? '🖼️ Image' : '📄 PDF'}</p>
+                      </div>
+                      <button
+                        onClick={() => removeFile(idx)}
+                        className="text-gray-400 hover:text-red-500 text-sm shrink-0 p-1"
+                      >✕</button>
+                    </div>
+                  ))}
+                  
+                  {/* Extract text from images button */}
+                  {uploadedFiles.some(f => f.type === 'image') && (
+                    <button
+                      type="button"
+                      onClick={extractTextFromImages}
+                      disabled={ocrBusy}
+                      className="w-full bg-indigo-100 hover:bg-indigo-200 text-indigo-700 font-extrabold text-xs py-2.5 rounded-xl flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50 border border-indigo-200"
+                    >
+                      {ocrBusy ? (
+                        <><span className="animate-spin">⏳</span> Extraction du texte en cours…</>
+                      ) : (
+                        <><span>🤖</span> Extraire le texte des images avec l'IA</>
+                      )}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div>
               <label className="text-xs font-semibold text-gray-500 block mb-1">Texte / Notes / Sujet *</label>
               <textarea value={form.text} onChange={e=>setForm(p=>({...p,text:e.target.value}))}
-                placeholder="Collez ici votre texte d'examen, un résumé de cours, ou les thèmes à maîtriser…&#10;&#10;Ex: Thema Umwelt — Recycling, Klimawandel, erneuerbare Energien..."
+                placeholder={"Collez ici votre texte d'examen, un résumé de cours, ou les thèmes à maîtriser…\n\nOu utilisez les boutons ci-dessus pour importer depuis une photo / fichier 📷"}
                 rows={8} className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-orange-400 resize-none" />
             </div>
             <button onClick={addTopic} disabled={!form.title.trim()||!form.text.trim()} className="gradient-bg w-full text-white font-bold py-3 rounded-xl text-sm disabled:opacity-50">
@@ -2006,7 +2299,7 @@ function ProfileTab({ apiKey, onResetKey }) {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".json"
+            accept=".json,application/json"
             onChange={importData}
             className="hidden"
           />
